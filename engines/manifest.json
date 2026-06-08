@@ -1,0 +1,132 @@
+{
+  "engines": {
+    "backhaul": {
+      "repo": "Musixal/Backhaul",
+      "tag": "v0.7.2",
+      "asset": "backhaul_linux_amd64.tar.gz",
+      "url": "https://github.com/Musixal/Backhaul/releases/download/v0.7.2/backhaul_linux_amd64.tar.gz",
+      "sha256": "57bf95c2eabeddb1152d2e94ac42f4310883ce0fb909ee2a57bd53503b2dabbc",
+      "binaries": [
+        "backhaul"
+      ]
+    },
+    "brook": {
+      "repo": "txthinking/brook",
+      "tag": "v20260101.0",
+      "asset": "brook_linux_amd64",
+      "url": "https://github.com/txthinking/brook/releases/download/v20260101.0/brook_linux_amd64",
+      "sha256": "7853250042877716376fab14a3a99be44bf242cd69dec11cfa71fada915db372",
+      "binaries": [
+        "brook"
+      ]
+    },
+    "chisel": {
+      "repo": "jpillora/chisel",
+      "tag": "v1.11.5",
+      "asset": "chisel_1.11.5_linux_amd64.gz",
+      "url": "https://github.com/jpillora/chisel/releases/download/v1.11.5/chisel_1.11.5_linux_amd64.gz",
+      "sha256": "2506226c4710a3c8d3b332f83d0f3b412fe2a8436b710ea0dbec44b288ab309b",
+      "binaries": [
+        "chisel"
+      ]
+    },
+    "frp": {
+      "repo": "fatedier/frp",
+      "tag": "v0.69.1",
+      "asset": "frp_0.69.1_linux_amd64.tar.gz",
+      "url": "https://github.com/fatedier/frp/releases/download/v0.69.1/frp_0.69.1_linux_amd64.tar.gz",
+      "sha256": "7be257b72dbbc60bcb3e0e25a5afd1dfac7b63f897084864d3c956dd3d5674e1",
+      "binaries": [
+        "frpc",
+        "frps"
+      ]
+    },
+    "gost": {
+      "repo": "go-gost/gost",
+      "tag": "v3.2.6",
+      "asset": "gost_3.2.6_linux_amd64.tar.gz",
+      "url": "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_amd64.tar.gz",
+      "sha256": "b39037b0380ea001fb3c0c28441c2e10bfc694f90682739a65b53e55dce5238b",
+      "binaries": [
+        "gost"
+      ]
+    },
+    "hysteria2": {
+      "repo": "apernet/hysteria",
+      "tag": "app/v2.9.2",
+      "asset": "hysteria-linux-amd64",
+      "url": "https://github.com/apernet/hysteria/releases/download/app/v2.9.2/hysteria-linux-amd64",
+      "sha256": "86fef8e2f1b2bf41318ac96724eee6c3b449e4e510022cc89658b63a6713922a",
+      "binaries": [
+        "hysteria",
+        "hysteria2"
+      ]
+    },
+    "mieru": {
+      "repo": "enfein/mieru",
+      "tag": "v3.33.0",
+      "asset": "mieru_3.33.0_linux_amd64.tar.gz",
+      "url": "https://github.com/enfein/mieru/releases/download/v3.33.0/mieru_3.33.0_linux_amd64.tar.gz",
+      "sha256": "c4c3d54253ec250a8f3872ee8a2a1db346fe4beaa8faca45ca7a1a44f1134dfb",
+      "binaries": [
+        "mieru",
+        "mita"
+      ],
+      "server_asset": "mita_3.33.0_linux_amd64.tar.gz",
+      "server_sha256": "1aab1f1267574e6798f5616be23493dc037dd6b161e90e5f98184661edf31821"
+    },
+    "naiveproxy": {
+      "repo": "klzgrad/naiveproxy",
+      "tag": "v148.0.7778.96-5",
+      "asset": "naiveproxy-v148.0.7778.96-5-linux-x64.tar.xz",
+      "url": "https://github.com/klzgrad/naiveproxy/releases/download/v148.0.7778.96-5/naiveproxy-v148.0.7778.96-5-linux-x64.tar.xz",
+      "sha256": "ca6958dcbbfb7b1b38c55a213dab6927ce3c1417d969b815657513b81fc7352d",
+      "binaries": [
+        "naive"
+      ]
+    },
+    "rathole": {
+      "repo": "rapiz1/rathole",
+      "tag": "v0.5.0",
+      "asset": "rathole-x86_64-unknown-linux-gnu.zip",
+      "url": "https://github.com/rathole-org/rathole/releases/download/v0.5.0/rathole-x86_64-unknown-linux-gnu.zip",
+      "sha256": "3e7d0d0f365120cd3cd351d147d1a12ee960c8068b464d4dd533a3821873b80e",
+      "binaries": [
+        "rathole"
+      ]
+    },
+    "shadowtls": {
+      "repo": "ihciah/shadow-tls",
+      "tag": "v0.2.25",
+      "asset": "shadow-tls-x86_64-unknown-linux-musl",
+      "url": "https://github.com/ihciah/shadow-tls/releases/download/v0.2.25/shadow-tls-x86_64-unknown-linux-musl",
+      "sha256": "a173f5f2d57f45211b68e10ceeddc15b1791077b914fa89747bc705fddc71532",
+      "binaries": [
+        "shadow-tls",
+        "shadowtls"
+      ]
+    },
+    "singbox": {
+      "repo": "SagerNet/sing-box",
+      "tag": "v1.13.13",
+      "asset": "sing-box-1.13.13-linux-amd64.tar.gz",
+      "url": "https://github.com/SagerNet/sing-box/releases/download/v1.13.13/sing-box-1.13.13-linux-amd64.tar.gz",
+      "sha256": "d7d35b806db72ecfb3021a2148ab72f03e8af0baa5067a85d5573888574fd890",
+      "binaries": [
+        "sing-box"
+      ]
+    },
+    "xray": {
+      "repo": "XTLS/Xray-core",
+      "tag": "v26.3.27",
+      "asset": "Xray-linux-64.zip",
+      "url": "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip",
+      "sha256": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae",
+      "binaries": [
+        "xray"
+      ]
+    }
+  },
+  "failures": {},
+  "generated_at": "2026-06-06T00:49:52Z"
+}

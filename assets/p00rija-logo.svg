@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 256 256">
+  <!-- Generator: Adobe Illustrator 30.2.1, SVG Export Plug-In . SVG Version: 2.1.1 Build 1)  -->
+  <defs>
+    <style>
+      .st0, .st1 {
+        stroke: #3a86ff;
+      }
+
+      .st0, .st1, .st2, .st3, .st4 {
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .st0, .st4 {
+        fill: #fff;
+        stroke-width: 4px;
+      }
+
+      .st1, .st2 {
+        stroke-width: 16px;
+      }
+
+      .st1, .st2, .st3 {
+        fill: none;
+      }
+
+      .st2, .st4 {
+        stroke: #00ebff;
+      }
+
+      .st3 {
+        stroke: #7000ff;
+        stroke-dasharray: 4 6;
+        stroke-width: 3px;
+      }
+
+      .st5 {
+        fill: #0b132b;
+      }
+    </style>
+  </defs>
+  <rect class="st5" width="256" height="256" rx="40.96" ry="40.96"/>
+  <path class="st2" d="M51.2,102.4h153.6M204.8,102.4l-25.6-25.6M204.8,102.4l-25.6,25.6"/>
+  <path class="st1" d="M204.8,153.6H51.2M51.2,153.6l25.6-25.6M51.2,153.6l25.6,25.6"/>
+  <line class="st3" x1="128" y1="39.21" x2="128" y2="216.79"/>
+  <circle class="st0" cx="128" cy="102.4" r="12.8"/>
+  <circle class="st4" cx="128" cy="153.6" r="12.8"/>
+</svg>
