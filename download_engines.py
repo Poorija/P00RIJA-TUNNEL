@@ -6,16 +6,14 @@ import io
 import json
 import os
 import shutil
-import ssl
 import stat
+import subprocess
 import tarfile
 import tempfile
 import time
 import urllib.request
 import zipfile
 from pathlib import Path
-
-ssl._create_default_https_context = ssl._create_unverified_context
 
 ENGINES_DIR = Path("engines")
 ARCHIVE_DIR = ENGINES_DIR / "archives"
@@ -86,6 +84,34 @@ ENGINE_SPECS = {
         "extra_assets": [
             {"asset": ["mita_", "linux_amd64.tar.gz"], "bins": {"mita": "mita"}}
         ],
+    },
+    "amneziawg": {
+        "repo": "amnezia-vpn/amneziawg-tools",
+        "asset": ["ubuntu-22.04-amneziawg-tools.zip"],
+        "bins": {"awg": "awg", "awg-quick": "awg-quick"},
+        "go_repo": "amnezia-vpn/amneziawg-go",
+        "go_branch": "master",
+        "go_binary": "amneziawg-go",
+    },
+    "tuic": {
+        "repo": "tuic-protocol/tuic",
+        "components": [
+            {
+                "release_prefix": "tuic-server-",
+                "asset": ["x86_64-unknown-linux-musl"],
+                "binary": "tuic-server",
+            },
+            {
+                "release_prefix": "tuic-client-",
+                "asset": ["x86_64-unknown-linux-musl"],
+                "binary": "tuic-client",
+            },
+        ],
+    },
+    "masque": {
+        "repo": "ferneast/masque-tunnel",
+        "asset": ["masque-tunnel-linux-amd64.tar.gz"],
+        "bins": {"masque-tunnel-linux-amd64": "masque-tunnel"},
     },
 }
 
@@ -185,7 +211,29 @@ def save_manifest(manifest):
 def bundle_archive(output):
     output = Path(output)
     with tarfile.open(output, "w:gz") as tf:
-        for path in ["P00RIJA.py", "Dockerfile", "install.sh", "install-panel.sh", "install-node.sh", "Pooriya-tunnel.sh", "engines"]:
+        bundle_paths = [
+            "P00RIJA.py",
+            "p00rija_core",
+            "Dockerfile",
+            ".dockerignore",
+            "install.sh",
+            "install-panel.sh",
+            "install-node.sh",
+            "installer-ui.sh",
+            "Pooriya-tunnel.sh",
+            "p00rija-control.sh",
+            "restore-panel-backup.sh",
+            "p00rija-host-agent.py",
+            "download_engines.py",
+            "README.md",
+            "README_FA.md",
+            "README-FA.md",
+            "LICENSE",
+            "assets",
+            "fonts",
+            "engines",
+        ]
+        for path in bundle_paths:
             p = Path(path)
             if p.exists():
                 tf.add(p, arcname=p.name)
@@ -193,6 +241,42 @@ def bundle_archive(output):
 
 
 def fetch_engine(engine_id, spec, keep_archives=True):
+    if spec.get("components"):
+        releases = request_json(f"https://api.github.com/repos/{spec['repo']}/releases?per_page=30")
+        installed = []
+        component_results = []
+        for component in spec["components"]:
+            release = next(
+                (item for item in releases if str(item.get("tag_name", "")).startswith(component["release_prefix"])),
+                None,
+            )
+            if not release:
+                raise RuntimeError(f"No release found for {component['release_prefix']}")
+            asset = match_asset(release.get("assets", []), component["asset"])
+            if not asset:
+                raise RuntimeError(f"No linux/amd64 asset found for {component['binary']}")
+            data = download(asset["browser_download_url"])
+            install_binary(component["binary"], data)
+            installed.append(component["binary"])
+            if keep_archives:
+                ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+                (ARCHIVE_DIR / asset["name"]).write_bytes(data)
+            component_results.append({
+                "tag": release.get("tag_name"),
+                "asset": asset["name"],
+                "url": asset["browser_download_url"],
+                "sha256": sha256(data),
+                "binary": component["binary"],
+            })
+        return {
+            "repo": spec["repo"],
+            "tag": " + ".join(item["tag"] for item in component_results),
+            "asset": " + ".join(item["asset"] for item in component_results),
+            "url": component_results[0]["url"],
+            "sha256": sha256("".join(item["sha256"] for item in component_results).encode()),
+            "binaries": installed,
+            "components": component_results,
+        }
     release = request_json(f"https://api.github.com/repos/{spec['repo']}/releases/latest")
     asset = match_asset(release.get("assets", []), spec["asset"])
     if not asset:
@@ -204,6 +288,30 @@ def fetch_engine(engine_id, spec, keep_archives=True):
         raise RuntimeError(f"No expected binary found in {asset['name']}")
     for dst, content in extracted.items():
         install_binary(dst, content)
+    source_result = None
+    if engine_id == "amneziawg":
+        source_name = "amneziawg-go-master.tar.gz"
+        source_url = f"https://github.com/{spec['go_repo']}/archive/refs/heads/{spec.get('go_branch', 'master')}.tar.gz"
+        source_data = download(source_url)
+        if keep_archives:
+            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            (ARCHIVE_DIR / source_name).write_bytes(source_data)
+        source_result = {"asset": source_name, "sha256": sha256(source_data), "built": False}
+        go_bin = shutil.which("go")
+        if go_bin:
+            with tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                with tarfile.open(fileobj=io.BytesIO(source_data), mode="r:gz") as tf:
+                    tf.extractall(tmp)
+                roots = [p for p in tmp.iterdir() if p.is_dir()]
+                if roots:
+                    env = os.environ.copy()
+                    env.update({"GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "0"})
+                    out = tmp / spec.get("go_binary", "amneziawg-go")
+                    subprocess.run([go_bin, "build", "-o", str(out), "."], cwd=roots[0], env=env, check=True)
+                    install_binary(spec.get("go_binary", "amneziawg-go"), out.read_bytes())
+                    extracted[spec.get("go_binary", "amneziawg-go")] = out.read_bytes()
+                    source_result["built"] = True
     extra_results = []
     for extra in spec.get("extra_assets", []):
         extra_asset = match_asset(release.get("assets", []), extra["asset"])
@@ -235,17 +343,23 @@ def fetch_engine(engine_id, spec, keep_archives=True):
         "sha256": sha256(data),
         "binaries": sorted(extracted.keys()),
         "extra": extra_results,
+        "source": source_result,
     }
 
 
 def main():
+    global ENGINES_DIR, ARCHIVE_DIR, MANIFEST_PATH
     parser = argparse.ArgumentParser(description="Download all P00RIJA tunnel engines for offline installation.")
     parser.add_argument("--engine", action="append", choices=sorted(ENGINE_SPECS), help="Download only selected engine(s).")
     parser.add_argument("--no-archives", action="store_true", help="Do not keep original release archives under engines/archives.")
     parser.add_argument("--bundle", default="", help="Also create a complete offline tar.gz bundle.")
+    parser.add_argument("--output-dir", default="engines", help="Directory where engine binaries and manifest are installed.")
     args = parser.parse_args()
 
-    ENGINES_DIR.mkdir(exist_ok=True)
+    ENGINES_DIR = Path(args.output_dir).expanduser().resolve()
+    ARCHIVE_DIR = ENGINES_DIR / "archives"
+    MANIFEST_PATH = ENGINES_DIR / "manifest.json"
+    ENGINES_DIR.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest()
     manifest.setdefault("engines", {})
     selected = args.engine or sorted(ENGINE_SPECS)

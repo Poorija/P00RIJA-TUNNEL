@@ -6,13 +6,12 @@
 set -euo pipefail
 
 APP_NAME="P00RIJA TUNNEL"
-VERSION="1.3.0"
+VERSION="1.9.95"
 TG_ID="@IlyaahD"
-GITHUB_REPO="github.com/Poorija/P00RIJA-Tunnel"
+GITHUB_REPO="github.com/Poorija/P00RIJA-TUNNEL"
 
 PY_SRC="/opt/p00rija/P00RIJA.py"
 INSTALL_PATH="/usr/local/bin/Pooriya-tunnel"
-CONTROL_PATH="/usr/local/bin/p00rija"
 SERVICE_PATH="/etc/systemd/system/p00rija-tunnel.service"
 CONFIG_DIR="/opt/p00rija"
 CONFIG_PATH="$CONFIG_DIR/p00rija_config.json"
@@ -225,21 +224,6 @@ ensure_env() {
       exit 1
     fi
   fi
-  if [[ -d "./fonts" ]]; then
-    rm -rf "$CONFIG_DIR/fonts"
-    cp -r "./fonts" "$CONFIG_DIR/fonts"
-  fi
-  if [[ -d "./engines" ]]; then
-    rm -rf "$CONFIG_DIR/engines"
-    cp -r "./engines" "$CONFIG_DIR/engines"
-  fi
-  if [[ -f "./download_engines.py" ]]; then
-    cp -f "./download_engines.py" "$CONFIG_DIR/download_engines.py"
-    chmod +x "$CONFIG_DIR/download_engines.py"
-  fi
-  if [[ -f "./p00rija-control.sh" ]]; then
-    install -m 0755 "./p00rija-control.sh" "$CONTROL_PATH"
-  fi
 }
 
 detect_os_and_arch() {
@@ -357,22 +341,48 @@ run_docker_container() {
   else
     mkdir -p "$CONFIG_DIR/engines"
   fi
+  if [[ -d "./fonts" ]]; then
+    rm -rf "$CONFIG_DIR/fonts"
+    cp -r "./fonts" "$CONFIG_DIR/fonts"
+  elif [[ -d "/opt/p00rija/fonts" ]]; then
+    rm -rf "$CONFIG_DIR/fonts"
+    cp -r "/opt/p00rija/fonts" "$CONFIG_DIR/fonts"
+  else
+    mkdir -p "$CONFIG_DIR/fonts"
+  fi
+  if [[ -d "./p00rija_core" ]]; then
+    rm -rf "$CONFIG_DIR/p00rija_core"
+    cp -r "./p00rija_core" "$CONFIG_DIR/p00rija_core"
+  else
+    mkdir -p "$CONFIG_DIR/p00rija_core"
+    printf '%s\n' '"""Fallback empty module package."""' > "$CONFIG_DIR/p00rija_core/__init__.py"
+  fi
+  local package_file
+  for package_file in install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py download_engines.py README.md README_FA.md LICENSE .dockerignore; do
+    if [[ -f "./$package_file" ]]; then
+      install -m 0644 "./$package_file" "$CONFIG_DIR/$package_file"
+    fi
+  done
 
   cat > "$CONFIG_DIR/Dockerfile" <<EOF
 FROM python:3.11-slim
+ARG P00RIJA_REGION=${region}
 ENV PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y openssl iputils-ping curl procps openssh-client sshpass ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN if [ "\$P00RIJA_REGION" = "ir" ]; then \
+      sed -i 's|http://deb.debian.org/debian-security|https://mirror.iranserver.com/debian-security|g; s|http://deb.debian.org/debian|https://mirror.iranserver.com/debian|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
+    fi && \
+    apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends openssl iputils-ping iperf3 curl procps openssh-client sshpass ca-certificates iproute2 wireguard-tools stunnel4 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY P00RIJA.py /app/P00RIJA.py
 COPY download_engines.py /app/download_engines.py
+COPY p00rija_core/ /app/p00rija_core/
 COPY fonts/ /app/fonts/
+COPY install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py README.md README_FA.md LICENSE Dockerfile /app/
 COPY engines/ /usr/local/bin/
 EXPOSE 8080
 CMD ["python3", "/app/P00RIJA.py"]
 EOF
   cp -f "$PY_SRC" "$CONFIG_DIR/P00RIJA.py"
-  [[ -f "$CONFIG_DIR/download_engines.py" ]] || printf '%s\n' '#!/usr/bin/env python3' 'print("download_engines.py is not bundled.")' > "$CONFIG_DIR/download_engines.py"
-  [[ -d "$CONFIG_DIR/fonts" ]] || mkdir -p "$CONFIG_DIR/fonts"
   
   docker build -t p00rija-tunnel:latest -f "$CONFIG_DIR/Dockerfile" "$CONFIG_DIR"
   
@@ -381,10 +391,15 @@ EOF
   
   echo -e "${CLR_CYAN}[*] Starting Docker container...${CLR_RESET}"
   mapfile -t publish_args < <(docker_bridge_publish_args)
+  tun_args=(--cap-add NET_ADMIN)
+  if [[ -c /dev/net/tun ]]; then
+    tun_args+=(--device /dev/net/tun)
+  fi
   docker run -d \
     --name "$DOCKER_CONTAINER_NAME" \
     --network bridge \
     --restart always \
+    "${tun_args[@]}" \
     "${publish_args[@]}" \
     -v "$CONFIG_DIR:$CONFIG_DIR" \
     p00rija-tunnel:latest
@@ -832,6 +847,18 @@ json.dump(data, open(sys.argv[7], 'w'), indent=4)
   if [[ "$role" == "panel" ]]; then
     python3 -c "import json, sys; json.dump({'role': 'panel', 'port': int(sys.argv[1])}, open(sys.argv[2], 'w'), indent=4)" "$port" "$CONFIG_PATH"
   else
+    panel_url=$(python3 - "$panel_url" <<'PY'
+import sys
+from urllib.parse import urlparse
+raw = sys.argv[1].strip().rstrip("/")
+parsed = urlparse(raw)
+if parsed.scheme not in ("http", "https") or not parsed.hostname:
+    raise SystemExit("Panel URL must include http:// or https:// and a valid host")
+if parsed.username or parsed.password or parsed.query or parsed.fragment:
+    raise SystemExit("Panel URL must not contain credentials, query, or fragment")
+print(f"{parsed.scheme}://{parsed.netloc}")
+PY
+)
     python3 -c "import json, sys; json.dump({'role': sys.argv[1], 'panel_url': sys.argv[2], 'token': sys.argv[3], 'private_key': sys.argv[4]}, open(sys.argv[5], 'w'), indent=4)" "$role" "${panel_url%/}" "$token" "$private_key" "$CONFIG_PATH"
   fi
   
@@ -1008,11 +1035,6 @@ if [[ ! -f "$INSTALL_PATH" ]] || ! diff -q "$0" "$INSTALL_PATH" >/dev/null 2>&1;
   cp -f "$0" "$INSTALL_PATH"
   chmod +x "$INSTALL_PATH"
   echo -e "${CLR_GREEN}[+] CLI manager registered globally. Run with: sudo Pooriya-tunnel${CLR_RESET}"
-fi
-
-if [[ -f "./p00rija-control.sh" ]]; then
-  install -m 0755 "./p00rija-control.sh" "$CONTROL_PATH"
-  echo -e "${CLR_GREEN}[+] Server control CLI registered globally. Run with: sudo p00rija status${CLR_RESET}"
 fi
 
 while true; do

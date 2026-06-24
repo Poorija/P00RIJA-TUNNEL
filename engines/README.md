@@ -1,11 +1,11 @@
-# Offline Engines
+# Engines
 
-This directory is intentionally part of the offline/develop package. Keep the engine binaries, `manifest.json`, and `archives/` here so panel and node installers can work when GitHub or public internet access is unavailable.
+This directory is used by the offline installer and Docker image build.
 
-To refresh or rebuild the offline engine set on a machine that has internet access, run:
+For a clean GitHub repository, keep only this file and `manifest.json` here. Downloaded engine binaries and archives are generated artifacts and should be prepared locally with:
 
 ```bash
 python3 download_engines.py --bundle p00rija-offline-bundle.tar.gz
 ```
 
-The panel and node Docker images copy this directory into `/usr/local/bin`, so bundled engines are available at runtime without downloading them during install.
+When the offline bundle is present, panel and node installers can build the runtime image without downloading tunneling engines from GitHub.
