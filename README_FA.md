@@ -5,7 +5,7 @@
 **نسخه:** 1.9.95  
 **لایسنس:** GPL v3  
 **توسعه‌دهنده:** [Poorija](https://github.com/Poorija)  
-**ایمیل:** mohammadmahdi.farhadianfard@gmail.com
+**ایمیل:** p00rija@tutamail.com
 
 [English](README.md)
 
