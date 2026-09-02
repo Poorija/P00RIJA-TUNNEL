@@ -2,10 +2,10 @@
 
 ![لوگوی P00RIJA TUNNEL](assets/p00rija-logo.svg)
 
-**نسخه:*** 1.9.95  
-**لایسنس:*** GPL v3  
+**نسخه:** 1.9.95  
+**لایسنس:** GPL v3  
 **توسعه‌دهنده:** [Poorija](https://github.com/Poorija)  
-**ایمیل:*** p00rija@tutamail.com
+**ایمیل:** p00rija@tutamail.com
 
 [English](README.md)
 
