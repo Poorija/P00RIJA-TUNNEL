@@ -5,7 +5,7 @@
 **Version:** 1.9.95  
 **License:** GPL v3  
 **Developer:** [Poorija](https://github.com/Poorija)  
-**Email:** mohammadmahdi.farhadianfard@gmail.com
+**Email:** p00rija@tutamail.com
 
 [فارسی](README_FA.md)
 
