@@ -5,15 +5,17 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ENGINES_DIR = Path("engines")
 ARCHIVE_DIR = ENGINES_DIR / "archives"
@@ -87,7 +89,10 @@ ENGINE_SPECS = {
     },
     "amneziawg": {
         "repo": "amnezia-vpn/amneziawg-tools",
-        "asset": ["ubuntu-22.04-amneziawg-tools.zip"],
+        # amneziawg tools are userspace and cross-compatible across Ubuntu LTS releases.
+        # Try newer Ubuntu assets first (24.04, then 22.04, then 20.04) so hosts running
+        # Ubuntu 24/26 pick the closest build, while older hosts still find a match.
+        "asset": ["ubuntu-24.04-amneziawg-tools.zip", "ubuntu-22.04-amneziawg-tools.zip", "ubuntu-20.04-amneziawg-tools.zip"],
         "bins": {"awg": "awg", "awg-quick": "awg-quick"},
         "go_repo": "amnezia-vpn/amneziawg-go",
         "go_branch": "master",
@@ -113,16 +118,72 @@ ENGINE_SPECS = {
         "asset": ["masque-tunnel-linux-amd64.tar.gz"],
         "bins": {"masque-tunnel-linux-amd64": "masque-tunnel"},
     },
+    "phormal": {
+        "repo": "Schmi7zz/Phormal",
+        # Resolve the branch tip to a commit SHA once and download at that exact
+        # revision, so the manifest records an immutable upstream version.
+        "pin_commit_branch": "main",
+        "raw_files": [
+            {
+                "url": "https://raw.githubusercontent.com/Schmi7zz/Phormal/main/phormal.sh",
+                "binary": "phormal",
+            }
+        ],
+    },
+    "hedioum": {
+        "repo": "hedioum/Hedioum-Pool-Tunnel",
+        "asset": ["hedioum-tunnel"],
+        "bins": {"hedioum-tunnel": "hedioum-tunnel"},
+        "extra_assets": [
+            {"asset": ["hedioum-tunnel-arm64"], "bins": {"hedioum-tunnel-arm64": "hedioum-tunnel-arm64"}}
+        ],
+    },
+    "cloak": {
+        "repo": "cbeuw/Cloak",
+        "asset": ["ck-client-linux-amd64"],
+        "bins": {"ck-client-linux-amd64": "ck-client"},
+        "extra_assets": [
+            {"asset": ["ck-server-linux-amd64"], "bins": {"ck-server-linux-amd64": "ck-server"}}
+        ],
+    },
 }
 
 
+_GITHUB_HOSTS = {
+    "api.github.com",
+    "github.com",
+    "www.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "raw.githubusercontent.com",
+    "codeload.github.com",
+}
+
+
+def _assert_github_url(url):
+    """Only GitHub-owned hosts are ever fetched by this tool."""
+    parsed = urllib.parse.urlparse(str(url))
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme!r}")
+    if parsed.username or parsed.password:
+        raise ValueError("Embedded credentials in URLs are not allowed")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise ValueError("URL has no host")
+    if host not in _GITHUB_HOSTS:
+        raise ValueError(f"Refusing non-GitHub host: {host}")
+    return url
+
+
 def request_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    url = _assert_github_url(url)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=30) as res:
         return json.loads(res.read().decode())
 
 
 def download(url):
+    url = _assert_github_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=180) as res:
         return res.read()
@@ -134,11 +195,51 @@ def sha256(data):
 
 def match_asset(assets, patterns):
     patterns = [p.lower() for p in patterns]
+    # Two matching modes:
+    #  - "candidate" mode: every pattern looks like a full asset filename (contains a file
+    #    extension like .zip/.tar.gz/.gz). These are mutually-exclusive alternatives, so we
+    #    return the FIRST pattern (in given priority order) that matches any asset. This is
+    #    what lets amneziawg prefer ubuntu-24.04 then fall back to 22.04 / 20.04.
+    #  - "token" mode (default): every pattern is a substring token, and ALL must be present
+    #    in a single asset name (logical AND). Used by most engines.
+    looks_like_filename = lambda p: any(p.endswith(ext) for ext in (".zip", ".tar.gz", ".tgz", ".gz", ".xz", ".txz"))
+    if len(patterns) > 1 and all(looks_like_filename(p) for p in patterns):
+        for candidate in patterns:
+            for asset in assets:
+                if candidate in asset["name"].lower():
+                    return asset
+        return None
     for asset in assets:
         name = asset["name"].lower()
         if all(pattern in name for pattern in patterns):
             return asset
     return None
+
+
+def validate_member_path(name):
+    # Reject absolute paths and any '..' path component (tar and zip members alike).
+    pure = PurePosixPath(name)
+    if pure.is_absolute() or ".." in pure.parts:
+        raise RuntimeError(f"Refusing to extract unsafe archive path: {name!r}")
+
+
+def safe_extract_tar(tf, dest):
+    try:
+        tf.extractall(dest, filter="data")
+    except TypeError:
+        # Python without the filter= argument (older interpreters): validate strictly
+        # ourselves — relative paths only, no '..', no symlinks/hardlinks, no devices.
+        for member in tf.getmembers():
+            validate_member_path(member.name)
+            if member.issym() or member.islnk() or member.isdev():
+                raise RuntimeError(f"Refusing to extract unsafe archive member: {member.name!r}")
+        tf.extractall(dest)
+
+
+def safe_extract_zip(zf, dest):
+    for info in zf.infolist():
+        validate_member_path(info.filename)
+    zf.extractall(dest)
 
 
 def extract_archive(name, data, wanted):
@@ -147,13 +248,13 @@ def extract_archive(name, data, wanted):
         tmp = Path(td)
         if name.endswith(".zip"):
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                zf.extractall(tmp)
+                safe_extract_zip(zf, tmp)
         elif name.endswith(".tar.gz") or name.endswith(".tgz"):
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-                tf.extractall(tmp)
+                safe_extract_tar(tf, tmp)
         elif name.endswith(".tar.xz") or name.endswith(".txz"):
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as tf:
-                tf.extractall(tmp)
+                safe_extract_tar(tf, tmp)
         elif name.endswith(".gz"):
             out = tmp / name[:-3]
             with gzip.open(io.BytesIO(data)) as gz:
@@ -205,7 +306,15 @@ def load_manifest():
 
 def save_manifest(manifest):
     manifest["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    # Atomic write (temp file + os.replace) so a crash can never leave a truncated
+    # or half-written manifest behind.
+    tmp = str(MANIFEST_PATH) + ".tmp"
+    if ".." in Path(tmp).parts:
+        raise ValueError("Refusing manifest path with '..' components")
+    tmp_fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    os.replace(tmp, str(MANIFEST_PATH))
 
 
 def bundle_archive(output):
@@ -241,6 +350,49 @@ def bundle_archive(output):
 
 
 def fetch_engine(engine_id, spec, keep_archives=True):
+    if spec.get("raw_files"):
+        # Pin branch-based raw downloads to an immutable commit SHA: resolve the branch
+        # tip once via the GitHub API, rewrite the URL to that revision, and record the
+        # SHA in the manifest so it always describes an exact upstream version.
+        pin_branch = spec.get("pin_commit_branch")
+        commit_sha = ""
+        if pin_branch:
+            commit = request_json(f"https://api.github.com/repos/{spec['repo']}/commits/{pin_branch}")
+            commit_sha = str(commit.get("sha") or "")
+            if not re.fullmatch(r"[0-9a-f]{7,40}", commit_sha):
+                raise RuntimeError(f"Could not resolve commit SHA for {spec['repo']}#{pin_branch}")
+            print(f"[{engine_id}] pinned {pin_branch} -> {commit_sha[:12]}")
+        installed = []
+        raw_results = []
+        for raw_file in spec["raw_files"]:
+            url = raw_file["url"]
+            if commit_sha and pin_branch:
+                url = url.replace(f"/{pin_branch}/", f"/{commit_sha}/")
+            binary = raw_file["binary"]
+            print(f"[{engine_id}] raw -> {binary}")
+            data = download(url)
+            install_binary(binary, data)
+            installed.append(binary)
+            if keep_archives:
+                ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+                archive_name = raw_file.get("archive_name") or f"{binary}.raw"
+                (ARCHIVE_DIR / archive_name).write_bytes(data)
+            raw_results.append({
+                "asset": raw_file.get("archive_name") or binary,
+                "url": url,
+                "sha256": sha256(data),
+                "binary": binary,
+            })
+        return {
+            "repo": spec["repo"],
+            "tag": commit_sha or "main",
+            "commit": commit_sha,
+            "asset": " + ".join(item["asset"] for item in raw_results),
+            "url": raw_results[0]["url"] if raw_results else "",
+            "sha256": sha256("".join(item["sha256"] for item in raw_results).encode()),
+            "binaries": installed,
+            "raw_files": raw_results,
+        }
     if spec.get("components"):
         releases = request_json(f"https://api.github.com/repos/{spec['repo']}/releases?per_page=30")
         installed = []
@@ -302,7 +454,7 @@ def fetch_engine(engine_id, spec, keep_archives=True):
             with tempfile.TemporaryDirectory() as td:
                 tmp = Path(td)
                 with tarfile.open(fileobj=io.BytesIO(source_data), mode="r:gz") as tf:
-                    tf.extractall(tmp)
+                    safe_extract_tar(tf, tmp)
                 roots = [p for p in tmp.iterdir() if p.is_dir()]
                 if roots:
                     env = os.environ.copy()
@@ -371,6 +523,11 @@ def main():
         except Exception as exc:
             failures[engine_id] = str(exc)
             print(f"[{engine_id}] ERROR: {exc}")
+            # Drop this engine's stale entry: the download failed, so any binaries
+            # left on disk are from an older run and the manifest must not claim
+            # they are current.
+            if manifest["engines"].pop(engine_id, None) is not None:
+                print(f"[{engine_id}] Removed stale manifest entry (disk state for this engine may be outdated).")
 
     manifest["failures"] = failures
     save_manifest(manifest)

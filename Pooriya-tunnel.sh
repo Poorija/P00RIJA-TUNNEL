@@ -6,7 +6,7 @@
 set -euo pipefail
 
 APP_NAME="P00RIJA TUNNEL"
-VERSION="1.9.95"
+VERSION="1.9.99"
 TG_ID="@IlyaahD"
 GITHUB_REPO="github.com/Poorija/P00RIJA-TUNNEL"
 
@@ -46,12 +46,54 @@ have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# Robust JSON value reader (replaces fragile grep|cut parsing). Usage: json_get <file> <dotted.key> [default]
+json_get() {
+  local file="$1" expr="$2" default="${3:-}"
+  [[ -f "$file" ]] || { printf '%s' "$default"; return 0; }
+  python3 - "$file" "$expr" "$default" <<'PY'
+import json, sys
+path, expr, default = sys.argv[1:4]
+try:
+    data = json.load(open(path))
+    value = data
+    for part in expr.split("."):
+        value = value.get(part, {}) if isinstance(value, dict) else {}
+    if value in ({}, None, ""):
+        print(default)
+    elif isinstance(value, bool):
+        print("true" if value else "false")
+    else:
+        print(value)
+except Exception:
+    print(default)
+PY
+}
+
+# Source the central installer UI library so mirror probing (select_best_* / probe_*)
+# and the shared IR mirror catalog stay in sync with install-panel.sh / install-node.sh.
+# When the wizard runs standalone (no installer-ui.sh next to it) we fall back to the
+# built-in mirror catalog defined below so Docker still gets configured consistently.
+_P00RIJA_UI_LOADED="0"
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]:-}" == "$0" ]]; then
+  :
+fi
+_P00RIJA_SCRIPT_DIR_UI="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+if [[ -f "$_P00RIJA_SCRIPT_DIR_UI/installer-ui.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$_P00RIJA_SCRIPT_DIR_UI/installer-ui.sh"
+  _P00RIJA_UI_LOADED="1"
+fi
+# Fallback mirror catalog used by configure_docker_mirror_local() when installer-ui.sh is not sourced.
+P00RIJA_DOCKER_IR_MIRRORS="${P00RIJA_DOCKER_IR_MIRRORS:-https://registry.ir.svrs.tech https://mirror.kargadan.ir https://docker.arvancloud.ir https://docker.kernel.ir https://focker.ir https://registry.docker.ir https://docker.iranserver.com https://registry.liara.ir}"
+P00RIJA_MIRROR_PROBE_TIMEOUT="${P00RIJA_MIRROR_PROBE_TIMEOUT:-4}"
+P00RIJA_SKIP_MIRROR_PROBE="${P00RIJA_SKIP_MIRROR_PROBE:-0}"
+
 docker_bridge_publish_args() {
   local role="unknown"
-  local panel_ports="8080 8081"
+  local panel_ports="8080 8000"
   if [[ -f "$CONFIG_PATH" ]]; then
     role=$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(data.get("role","unknown"))' "$CONFIG_PATH" 2>/dev/null || echo "unknown")
-    panel_ports=$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(int(data.get("port",8080)), int(data.get("api_port",8081)))' "$CONFIG_PATH" 2>/dev/null || echo "8080 8081")
+    panel_ports=$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(int(data.get("port",8080)), int(data.get("api_port",8000)))' "$CONFIG_PATH" 2>/dev/null || echo "8080 8000")
   fi
   if [[ "$role" == "panel" ]]; then
     local web_port api_port
@@ -97,12 +139,19 @@ detect_public_ip() {
 detect_server_region() {
   if [[ "${P00RIJA_SERVER_REGION:-}" =~ ^(ir|IR)$ ]]; then echo "ir"; return 0; fi
   if [[ "${P00RIJA_SERVER_REGION:-}" =~ ^(global|GLOBAL|outside|OUTSIDE)$ ]]; then echo "global"; return 0; fi
+  # Detection is advisory only (HTTPS endpoints, short timeouts); interactive callers
+  # confirm the result in select_server_region().
   local cc=""
-  cc=$(curl -fsSL --max-time 3 http://ip-api.com/line?fields=countryCode 2>/dev/null || true)
+  cc=$(curl -fsSL --max-time 3 https://ip-api.com/line?fields=countryCode 2>/dev/null || true)
   [[ -z "$cc" ]] && cc=$(curl -fsSL --max-time 3 https://ipinfo.io/country 2>/dev/null || true)
   [[ -z "$cc" ]] && cc=$(curl -fsSL --max-time 3 https://ifconfig.co/country-iso 2>/dev/null || true)
   cc="${cc//$'\r'/}"
   cc="${cc//$'\n'/}"
+  if [[ -z "$cc" ]]; then
+    echo -e "${CLR_YELLOW}[i] Region detection unavailable; defaulting to global Docker repositories.${CLR_RESET}" >&2
+    echo "global"
+    return 0
+  fi
   [[ "$cc" == "IR" ]] && echo "ir" || echo "global"
 }
 
@@ -123,11 +172,28 @@ select_server_region() {
 
 configure_docker_mirror() {
   local region="${1:-global}"
+  # Delegate to the local probe-aware fallback. When installer-ui.sh was sourced at
+  # startup, the IR mirror catalog and timeout below already match the central one.
+  configure_docker_mirror_local "$region"
+}
+
+# Local fallback that mirrors installer-ui.sh: probes IR Docker mirrors and writes the
+# fastest reachable ones into /etc/docker/daemon.json. Kept here so the legacy wizard
+# works standalone when installer-ui.sh is not present on disk.
+configure_docker_mirror_local() {
+  local region="${1:-global}"
+  local selected=""
+  if [[ "$region" == "ir" ]]; then
+    selected="$(select_best_docker_mirrors_local "$P00RIJA_DOCKER_IR_MIRRORS" | tr '\n' ' ')"
+    selected="${selected% }"
+    [[ -z "$selected" ]] && selected="$P00RIJA_DOCKER_IR_MIRRORS"
+    echo -e "${CLR_CYAN}[*] Selected Docker registry mirrors: ${selected}${CLR_RESET}"
+  fi
   mkdir -p /etc/docker
-  python3 - "$region" <<'PY'
+  python3 - "$region" "$selected" <<'PY'
 import json, os, sys
 path = "/etc/docker/daemon.json"
-region = sys.argv[1]
+region, mirrors_text = sys.argv[1:3]
 data = {}
 if os.path.exists(path) and os.path.getsize(path):
     try:
@@ -135,8 +201,9 @@ if os.path.exists(path) and os.path.getsize(path):
             data = json.load(f)
     except Exception:
         data = {}
-if region == "ir":
-    data["registry-mirrors"] = ["https://docker.arvancloud.ir", "https://registry.docker.ir"]
+mirrors = [item.strip() for item in mirrors_text.split() if item.strip()]
+if region == "ir" and mirrors:
+    data["registry-mirrors"] = mirrors
 else:
     data.pop("registry-mirrors", None)
 tmp = f"{path}.tmp"
@@ -147,10 +214,43 @@ PY
   systemctl restart docker >/dev/null 2>&1 || true
 }
 
+# Portable millisecond timestamp (date +%s%3N is NOT portable across GNU/BSD/macOS).
+now_ms() {
+  python3 -c 'import time;print(int(time.time()*1000))' 2>/dev/null || date +%s 2>/dev/null || echo 0
+}
+
+# Lightweight Docker mirror probe: issue a /v2/ request and measure latency.
+probe_docker_mirror_local() {
+  local mirror="$1" timeout="${P00RIJA_MIRROR_PROBE_TIMEOUT:-4}"
+  local probe_url="${mirror%/}/v2/"
+  local start_ms end_ms http_code
+  have curl || { echo "fail"; return 0; }
+  start_ms=$(now_ms)
+  # NOTE: no -f here; 200 = reachable unauthenticated catalog, 401 = reachable but requires auth (valid mirror).
+  http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$timeout" "$probe_url" 2>/dev/null || echo "000")
+  end_ms=$(now_ms)
+  if [[ "$http_code" == "200" || "$http_code" == "401" ]]; then echo $(( end_ms - start_ms )); else echo "fail"; fi
+}
+
+# Sort all reachable Docker mirrors fastest-first; fall back to catalog order on total failure.
+select_best_docker_mirrors_local() {
+  local mirrors="$1" mirror latency results=""
+  if [[ "$P00RIJA_SKIP_MIRROR_PROBE" == "1" ]]; then printf '%s\n' $mirrors; return 0; fi
+  for mirror in $mirrors; do
+    latency=$(probe_docker_mirror_local "$mirror")
+    if [[ "$latency" != "fail" ]]; then results+="${latency} ${mirror}"$'\n'; fi
+  done
+  if [[ -n "$results" ]]; then
+    printf '%s' "$results" | sort -n | while IFS=' ' read -r _ m; do [[ -n "$m" ]] && printf '%s\n' "$m"; done
+  else
+    printf '%s\n' $mirrors
+  fi
+}
+
 # Auto-detect existing installations
 detect_existing_install() {
   if [[ -f "$CONFIG_PATH" ]]; then
-    local role; role=$(grep -o '"role": *"[^"]*"' "$CONFIG_PATH" | cut -d'"' -f4 || echo "unknown")
+    local role; role=$(json_get "$CONFIG_PATH" role "unknown")
     local run_mode; run_mode=$(get_run_mode)
     
     local status="${CLR_RED}STOPPED${CLR_RESET}"
@@ -165,7 +265,7 @@ detect_existing_install() {
     fi
     
     local display_role="${role^^}"
-    if [[ "$role" == "external" || "$role" == "external" ]]; then
+    if [[ "$role" == "external" ]]; then
       display_role="EXTERNAL NODE"
     elif [[ "$role" == "internal" ]]; then
       display_role="INTERNAL NODE"
@@ -178,21 +278,22 @@ detect_existing_install() {
     echo -e "    Runner Mode: ${CLR_BOLD}${CLR_WHITE}${run_mode^^}${CLR_RESET}"
     echo -e "    Status: ${status}"
     if [[ "$role" == "panel" ]]; then
-      local port; port=$(grep -o '"port": *[0-9]*' "$CONFIG_PATH" | awk -F': ' '{print $2}' || echo "8080")
+      local port; port=$(json_get "$CONFIG_PATH" port "8080")
       local tls_status="http"
       local panel_host="localhost"
       if [[ -f "/opt/p00rija/p00rija_db.json" ]]; then
-        if grep -q '"panel_tls": *true' "/opt/p00rija/p00rija_db.json"; then
+        local tls_val; tls_val=$(json_get "/opt/p00rija/p00rija_db.json" settings.panel_tls "false")
+        if [[ "$tls_val" == "true" ]]; then
           tls_status="https"
         fi
-        panel_host=$(grep -o '"panel_host": *"[^"]*"' "/opt/p00rija/p00rija_db.json" | cut -d'"' -f4 || echo "localhost")
+        panel_host=$(json_get "/opt/p00rija/p00rija_db.json" settings.panel_host "localhost")
       fi
       if [[ -z "$panel_host" ]]; then
         panel_host="localhost"
       fi
       echo -e "    Web Console Access: ${CLR_BOLD}${CLR_CYAN}${tls_status}://${panel_host}:${port}${CLR_RESET}"
     else
-      local panel_url; panel_url=$(grep -o '"panel_url": *"[^"]*"' "$CONFIG_PATH" | cut -d'"' -f4 || echo "")
+      local panel_url; panel_url=$(json_get "$CONFIG_PATH" panel_url "")
       echo -e "    Connected Panel: ${CLR_BOLD}${CLR_CYAN}${panel_url}${CLR_RESET}"
     fi
     echo -e "${CLR_DIM}------------------------------------------------------------${CLR_RESET}"
@@ -297,14 +398,22 @@ manage_docker_install() {
   fi
 
   # Call official Docker installer script only outside Iran.
-  if [[ "$region" != "ir" ]] && curl -fsSL https://get.docker.com | sh; then
-    systemctl daemon-reload
-    systemctl enable docker >/dev/null 2>&1 || true
-    systemctl start docker >/dev/null 2>&1 || true
-    configure_docker_mirror "$region"
-    if have docker; then
-      echo -e "${CLR_GREEN}[+] Docker Engine installed and running successfully!${CLR_RESET}"
-      return 0
+  # Download it to a root-only mktemp file, chmod 700, then execute it — never pipe curl into sh.
+  if [[ "$region" != "ir" ]]; then
+    local get_docker_tmp
+    get_docker_tmp="$(mktemp)"
+    if curl -fsSL https://get.docker.com -o "$get_docker_tmp" && chmod 700 "$get_docker_tmp" && "$get_docker_tmp"; then
+      rm -f "$get_docker_tmp"
+      systemctl daemon-reload
+      systemctl enable docker >/dev/null 2>&1 || true
+      systemctl start docker >/dev/null 2>&1 || true
+      configure_docker_mirror "$region"
+      if have docker; then
+        echo -e "${CLR_GREEN}[+] Docker Engine installed and running successfully!${CLR_RESET}"
+        return 0
+      fi
+    else
+      rm -f "$get_docker_tmp"
     fi
   fi
 
@@ -368,10 +477,17 @@ run_docker_container() {
 FROM python:3.11-slim
 ARG P00RIJA_REGION=${region}
 ENV PYTHONUNBUFFERED=1
+# Install ca-certificates first so HTTPS Iranian mirrors can be verified.
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+# Switch to Iranian Debian mirrors for Iran-built images (Arvancloud first, IranServer fallback).
 RUN if [ "\$P00RIJA_REGION" = "ir" ]; then \
-      sed -i 's|http://deb.debian.org/debian-security|https://mirror.iranserver.com/debian-security|g; s|http://deb.debian.org/debian|https://mirror.iranserver.com/debian|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
-    fi && \
-    apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends openssl iputils-ping iperf3 curl procps openssh-client sshpass ca-certificates iproute2 wireguard-tools stunnel4 && rm -rf /var/lib/apt/lists/*
+      sed -i 's|http://deb.debian.org/debian-security|https://mirror.arvancloud.ir/debian-security|g; s|http://deb.debian.org/debian|https://mirror.arvancloud.ir/debian|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
+    fi
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends openssl iputils-ping iperf3 curl procps openssh-client sshpass ca-certificates iproute2 wireguard-tools stunnel4 && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY P00RIJA.py /app/P00RIJA.py
 COPY download_engines.py /app/download_engines.py
@@ -380,6 +496,9 @@ COPY fonts/ /app/fonts/
 COPY install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py README.md README_FA.md LICENSE Dockerfile /app/
 COPY engines/ /usr/local/bin/
 EXPOSE 8080
+# The panel's default web port constant is 8080; the container reads its actual
+# port from p00rija_config.json. Non-panel (node) containers have nothing to probe.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python3 -c "import json,socket; c=json.load(open('/opt/p00rija/p00rija_config.json')); p=int(c.get('port',8080)); socket.create_connection(('127.0.0.1',p),5) if c.get('role')=='panel' else None"
 CMD ["python3", "/app/P00RIJA.py"]
 EOF
   cp -f "$PY_SRC" "$CONFIG_DIR/P00RIJA.py"
@@ -400,7 +519,7 @@ EOF
     --network bridge \
     --restart always \
     "${tun_args[@]}" \
-    "${publish_args[@]}" \
+    ${publish_args[@]+"${publish_args[@]}"} \
     -v "$CONFIG_DIR:$CONFIG_DIR" \
     p00rija-tunnel:latest
     
@@ -544,7 +663,7 @@ run_setup_wizard() {
   
   # Check if already installed
   if [[ -f "$CONFIG_PATH" ]]; then
-    local existing_role; existing_role=$(grep -o '"role": *"[^"]*"' "$CONFIG_PATH" | cut -d'"' -f4 || echo "unknown")
+    local existing_role; existing_role=$(json_get "$CONFIG_PATH" role "unknown")
     local existing_mode; existing_mode=$(get_run_mode)
     
     local display_role="${existing_role^^}"
@@ -604,6 +723,7 @@ run_setup_wizard() {
   local run_mode="docker" # default recommendation
   local role="panel"
   local port=8080
+  local api_port=8000
   local username="admin"
   local password=""
   local panel_url=""
@@ -769,8 +889,14 @@ run_setup_wizard() {
       echo ""
     done
 
-    # Generate initial JSON database securely
-    local pwd_hash; pwd_hash=$(python3 -c "import hashlib; print(hashlib.sha256(input().encode()).hexdigest())" <<< "$password")
+    # Generate initial JSON database securely (PBKDF2-HMAC-SHA256 with random salt)
+    local pwd_hash
+    if declare -F p00rija_hash_password >/dev/null 2>&1; then
+      pwd_hash=$(p00rija_hash_password "$password")
+    else
+      pwd_hash=$(P00RIJA_HASH_INPUT="$password" python3 -c 'import hashlib,os,secrets; p=os.environ.get("P00RIJA_HASH_INPUT",""); i=200000; s=secrets.token_bytes(16); d=hashlib.pbkdf2_hmac("sha256",p.encode(),s,i); print(f"pbkdf2_sha256${i}${s.hex()}${d.hex()}")')
+      unset P00RIJA_HASH_INPUT
+    fi
     
     mkdir -p "$CONFIG_DIR"
     python3 -c "
@@ -779,18 +905,19 @@ data = {
     'admin': {'username': sys.argv[1], 'password_hash': sys.argv[2]},
     'settings': {
         'port': int(sys.argv[3]),
-        'panel_host': sys.argv[4],
+        'api_port': int(sys.argv[4]),
+        'panel_host': sys.argv[5],
         'test_interval': 30,
         'max_idle_seconds': 300,
         'panel_tls': True,
-        'cert_path': f'{sys.argv[6]}/certs/cert.pem',
-        'key_path': f'{sys.argv[6]}/certs/key.pem',
-        'cert_auto_generated': sys.argv[8].lower() == 'true'
+        'cert_path': f'{sys.argv[7]}/certs/cert.pem',
+        'key_path': f'{sys.argv[7]}/certs/key.pem',
+        'cert_auto_generated': sys.argv[9].lower() == 'true'
     },
     'nodes': {}, 'links': {}, 'logs': []
 }
-json.dump(data, open(sys.argv[7], 'w'), indent=4)
-" "$username" "$pwd_hash" "$port" "$panel_host" "${panel_tls:-true}" "$CONFIG_DIR" "$CONFIG_DIR/p00rija_db.json" "$cert_auto_generated"
+json.dump(data, open(sys.argv[8], 'w'), indent=4)
+" "$username" "$pwd_hash" "$port" "$api_port" "$panel_host" "${panel_tls:-true}" "$CONFIG_DIR" "$CONFIG_DIR/p00rija_db.json" "$cert_auto_generated"
     chmod 0600 "$CONFIG_DIR/p00rija_db.json"
 
   else
@@ -845,7 +972,7 @@ json.dump(data, open(sys.argv[7], 'w'), indent=4)
   # Save Config JSON securely
   install -m 0600 /dev/null "$CONFIG_PATH"
   if [[ "$role" == "panel" ]]; then
-    python3 -c "import json, sys; json.dump({'role': 'panel', 'port': int(sys.argv[1])}, open(sys.argv[2], 'w'), indent=4)" "$port" "$CONFIG_PATH"
+    python3 -c "import json, sys; json.dump({'role': 'panel', 'port': int(sys.argv[1]), 'api_port': int(sys.argv[2])}, open(sys.argv[3], 'w'), indent=4)" "$port" "$api_port" "$CONFIG_PATH"
   else
     panel_url=$(python3 - "$panel_url" <<'PY'
 import sys
@@ -859,7 +986,9 @@ if parsed.username or parsed.password or parsed.query or parsed.fragment:
 print(f"{parsed.scheme}://{parsed.netloc}")
 PY
 )
-    python3 -c "import json, sys; json.dump({'role': sys.argv[1], 'panel_url': sys.argv[2], 'token': sys.argv[3], 'private_key': sys.argv[4]}, open(sys.argv[5], 'w'), indent=4)" "$role" "${panel_url%/}" "$token" "$private_key" "$CONFIG_PATH"
+    # Secrets travel via environment variables (never argv / ps output).
+    P00RIJA_NODE_TOKEN="$token" P00RIJA_NODE_PRIVATE_KEY="$private_key" \
+      python3 -c "import json, os, sys; json.dump({'role': sys.argv[1], 'panel_url': sys.argv[2], 'token': os.environ['P00RIJA_NODE_TOKEN'], 'private_key': os.environ.get('P00RIJA_NODE_PRIVATE_KEY', '')}, open(sys.argv[3], 'w'), indent=4)" "$role" "${panel_url%/}" "$CONFIG_PATH"
   fi
   
   # Register runtime mode
@@ -1022,6 +1151,20 @@ print_banner() {
 
 # ===================== Main Execution =====================
 need_root
+
+# If the new split layout (install.sh / install-panel.sh / install-node.sh) is present,
+# this legacy wizard must not run over it: hand control to p00rija-control or refuse.
+if [[ -d "/opt/p00rija/panel" || -d "/opt/p00rija/node" ]]; then
+  echo -e "${CLR_YELLOW}[i] New P00RIJA layout detected (/opt/p00rija/panel or /opt/p00rija/node).${CLR_RESET}"
+  if [[ -x /usr/local/bin/p00rija ]]; then
+    echo -e "${CLR_CYAN}[*] Handing control to the p00rija server CLI...${CLR_RESET}"
+    exec /usr/local/bin/p00rija "$@"
+  fi
+  echo -e "${CLR_RED}[!] This legacy wizard cannot manage the new panel/node layout, and the p00rija control CLI was not found.${CLR_RESET}" >&2
+  echo -e "${CLR_YELLOW}[i] Reinstall with install-panel.sh / install-node.sh (or install.sh) to restore server management.${CLR_RESET}" >&2
+  exit 1
+fi
+
 install_dependencies
 ensure_env
 

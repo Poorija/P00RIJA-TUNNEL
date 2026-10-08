@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -131,20 +132,76 @@ def _read_proc_name(pid: int) -> str:
         return ""
 
 
+def _proc_exe_name(pid: int) -> str:
+    """Basename of the process executable from /proc/<pid>/exe ('' if unknown)."""
+    try:
+        return os.path.basename(os.readlink(f"/proc/{pid}/exe"))
+    except Exception:
+        return ""
+
+
+def _proc_argv0(pid: int) -> str:
+    """First NUL-separated token of /proc/<pid>/cmdline ('' if unknown)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            first = f.read().split(b"\x00", 1)[0].decode("utf-8", "ignore").strip()
+        if first:
+            # Only the basename is a stable comparison target (argv[0] may be a path).
+            return os.path.basename(first)
+    except Exception:
+        pass
+    return ""
+
+
+def _ancestor_pids(pid: int) -> set[int]:
+    """All ancestor pids of `pid` by walking /proc/<pid>/status PPid lines."""
+    ancestors: set[int] = set()
+    current = pid
+    for _ in range(4096):  # hard cap against corrupt PPid chains
+        try:
+            with open(f"/proc/{current}/status", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if line.startswith("PPid:"):
+                        parent = int(line.split(":", 1)[1].strip() or 0)
+                        break
+                else:
+                    break
+        except Exception:
+            break
+        if parent <= 0 or parent in ancestors:
+            break
+        ancestors.add(parent)
+        current = parent
+    return ancestors
+
+
 def _matching_pids(names: set[str]) -> list[int]:
+    """Return pids whose executable or argv[0] exactly matches one of `names`.
+
+    Substring matching is intentionally avoided: an engine named ``ssh`` must
+    never match ``sshd``, and a path like /opt/p00rija/engines/wg must not
+    match unrelated processes that merely mention the name in their cmdline.
+    The current process and all of its ancestors are never matched.
+    """
     proc_root = Path("/proc")
     if not proc_root.exists():
         return []
     current = os.getpid()
+    protected = {current} | _ancestor_pids(current)
+    exact_names = {name for name in names if name}
     matches: list[int] = []
     for item in proc_root.iterdir():
         if not item.name.isdigit():
             continue
         pid = int(item.name)
-        if pid == current:
+        if pid in protected:
             continue
-        proc_name = _read_proc_name(pid)
-        if any(name and name in proc_name for name in names):
+        exe_name = _proc_exe_name(pid)
+        if exe_name and exe_name in exact_names:
+            matches.append(pid)
+            continue
+        argv0 = _proc_argv0(pid)
+        if argv0 and argv0 in exact_names:
             matches.append(pid)
     return matches
 
@@ -318,6 +375,38 @@ def control_engine_process(
     }
 
 
+def safe_extract_tar(tf: tarfile.TarFile, dest: str) -> None:
+    """Extract a tar archive rejecting absolute paths, traversal, and links."""
+    try:
+        tf.extractall(dest, filter="data")
+        return
+    except TypeError:
+        pass
+    dest_real = os.path.realpath(dest)
+    for member in tf.getmembers():
+        name = member.name
+        if name.startswith("/") or name.startswith("\\") or ".." in name.replace("\\", "/").split("/"):
+            raise ValueError(f"Unsafe path in archive: {name}")
+        if member.issym() or member.islnk():
+            raise ValueError(f"Unsupported link entry in archive: {name}")
+        target = os.path.realpath(os.path.join(dest, name))
+        if not target.startswith(dest_real + os.sep) and target != dest_real:
+            raise ValueError(f"Unsafe path in archive: {name}")
+    tf.extractall(dest)
+
+
+def safe_extract_zip(zf: zipfile.ZipFile, dest: str) -> None:
+    """Extract a zip archive rejecting absolute paths and traversal entries."""
+    dest_real = os.path.realpath(dest)
+    for name in zf.namelist():
+        if name.startswith("/") or name.startswith("\\") or ".." in name.replace("\\", "/").split("/"):
+            raise ValueError(f"Unsafe path in archive: {name}")
+        target = os.path.realpath(os.path.join(dest, name))
+        if not target.startswith(dest_real + os.sep) and target != dest_real:
+            raise ValueError(f"Unsafe path in archive: {name}")
+    zf.extractall(dest)
+
+
 def install_engine_archive(
     catalog: dict[str, dict[str, Any]],
     engine_id: str,
@@ -333,25 +422,30 @@ def install_engine_archive(
         raise ValueError("This engine is built-in and has no external binary")
     os.makedirs(engines_dir, exist_ok=True)
     installed: list[str] = []
-    safe_name = os.path.basename(filename or "engine.bin")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(filename or "engine.bin")).strip(".") or "engine.bin"
     with tempfile.TemporaryDirectory() as td:
         root = os.path.join(td, "extract")
         os.makedirs(root, exist_ok=True)
         archive = os.path.join(td, safe_name)
-        with open(archive, "wb") as f:
+        archive_fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(archive_fd, "wb") as f:
             f.write(content)
         if safe_name.endswith(".zip"):
             with zipfile.ZipFile(archive) as zf:
-                zf.extractall(root)
+                safe_extract_zip(zf, root)
         elif safe_name.endswith((".tar.gz", ".tgz")):
             with tarfile.open(archive, "r:gz") as tf:
-                tf.extractall(root)
+                safe_extract_tar(tf, root)
         elif safe_name.endswith((".tar.xz", ".txz")):
             with tarfile.open(archive, "r:xz") as tf:
-                tf.extractall(root)
+                safe_extract_tar(tf, root)
         elif safe_name.endswith(".gz"):
-            out_name = safe_name[:-3]
-            with gzip.open(archive, "rb") as gz, open(os.path.join(root, out_name), "wb") as out:
+            out_name = re.sub(r"[^A-Za-z0-9._-]", "_", safe_name[:-3]).strip(".") or "engine.bin"
+            out_path = os.path.join(root, out_name)
+            if ".." in os.path.relpath(out_path, root).split(os.sep):
+                raise ValueError("unsafe archive member path")
+            out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            with gzip.open(archive, "rb") as gz, os.fdopen(out_fd, "wb") as out:
                 out.write(gz.read())
         else:
             shutil.copy2(archive, os.path.join(root, safe_name))

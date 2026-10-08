@@ -28,163 +28,103 @@ import io
 import shutil
 import pty
 import zlib
+import fcntl
+import termios
 from queue import Queue, Empty, Full
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-try:
-    from p00rija_core.engines import (
-        build_engine_catalog,
-        engine_binary_path as core_engine_binary_path,
-        list_engine_status as core_list_engine_status,
-        control_engine_process as core_control_engine_process,
-        check_engine_health as core_check_engine_health,
-        install_engine_archive as core_install_engine_archive,
-    )
-    from p00rija_core.tunnel_methods import (
-        EXTRA_ENGINE_CATALOG,
-        EXTRA_TUNNEL_ENGINES,
-        EXTRA_TUNNEL_MODES,
-        EXTRA_TRANSPORTS,
-        EXTRA_TUNNEL_PROFILES,
-        TUNNEL_OPTION_MATRIX_EXTRA,
-        aead_config_for_link,
-        amneziawg_config_for_link,
-        default_tunnel_profiles,
-        ensure_tunnel_profiles as core_ensure_tunnel_profiles,
-        hysteria2_config_for_link,
-        muxquantum_config_for_link,
-        profile_decision_metadata,
-        raw_socket_config_for_link,
-        rating_level,
-        ssh_config_for_link,
-        singbox_config_for_link,
-        masque_config_for_link,
-        stunnel_config_for_link,
-        wireguard_config_for_link,
-        xray_config_for_link,
-    )
-    from p00rija_core.security import (
-        certificate_is_self_signed,
-        generate_local_panel_certificate,
-        make_node_keypair,
-        make_totp_secret,
-        node_public_from_private,
-        normalize_cert_host,
-        normalize_node_token,
-        normalize_role,
-        role_matches,
-        unique_cert_hosts,
-        valid_node_signature,
-        verify_totp,
-    )
-    from p00rija_core.metrics import (
-        NetSpeedometer,
-        get_cpu_percent,
-        get_host_info,
-        get_own_rss_kb,
-        get_ram_percent,
-    )
-    from p00rija_core.database import P00RIJADB
-    from p00rija_core.api import describe_api_surface, dispatch_dashboard_get, dispatch_node_ssh_request, dispatch_nodes_get, dispatch_nodes_post, dispatch_public_system_get
-    from p00rija_core.links_api import dispatch_links_delete, dispatch_links_get, dispatch_links_post
-    from p00rija_core.runtime_api import dispatch_runtime_get
-    from p00rija_core.backup_migration import (
-        build_encrypted_backup,
-        list_server_backups,
-        migrate_backup_over_ssh,
-        normalize_panel_url,
-        restore_encrypted_backup,
-    )
-    from p00rija_core.ui import (
-        APP_LOGO_SVG,
-        INDEX_HTML,
-        PANEL_PAGE_ROUTES,
-        build_manifest,
-        font_content_type,
-        service_worker_script,
-    )
-    from p00rija_core.system_audit import build_system_audit as core_build_system_audit
-    from p00rija_core.engine_updates import check_engine_updates as core_check_engine_updates
-    from p00rija_core.versioning import node_version_status
-    from p00rija_core.host_control import (
-        host_control_available,
-        host_control_status,
-        submit_host_control,
-    )
-except Exception:
-    build_engine_catalog = None
-    core_engine_binary_path = None
-    core_list_engine_status = None
-    core_control_engine_process = None
-    core_check_engine_health = None
-    core_install_engine_archive = None
-    EXTRA_ENGINE_CATALOG = {}
-    EXTRA_TUNNEL_ENGINES = set()
-    EXTRA_TUNNEL_MODES = set()
-    EXTRA_TRANSPORTS = set()
-    EXTRA_TUNNEL_PROFILES = {}
-    TUNNEL_OPTION_MATRIX_EXTRA = {}
-    aead_config_for_link = None
-    amneziawg_config_for_link = None
-    default_tunnel_profiles = None
-    core_ensure_tunnel_profiles = None
-    hysteria2_config_for_link = None
-    muxquantum_config_for_link = None
-    profile_decision_metadata = None
-    raw_socket_config_for_link = None
-    rating_level = None
-    ssh_config_for_link = None
-    stunnel_config_for_link = None
-    wireguard_config_for_link = None
-    xray_config_for_link = None
-    singbox_config_for_link = None
-    masque_config_for_link = None
-    certificate_is_self_signed = None
-    generate_local_panel_certificate = None
-    make_node_keypair = None
-    make_totp_secret = None
-    node_public_from_private = None
-    normalize_cert_host = None
-    normalize_node_token = None
-    normalize_role = None
-    role_matches = None
-    unique_cert_hosts = None
-    valid_node_signature = None
-    verify_totp = None
-    NetSpeedometer = None
-    get_cpu_percent = None
-    get_host_info = None
-    get_own_rss_kb = None
-    get_ram_percent = None
-    P00RIJADB = None
-    describe_api_surface = lambda: {"route_count": 0, "groups": {}, "routes": []}
-    dispatch_dashboard_get = None
-    dispatch_node_ssh_request = None
-    dispatch_nodes_get = None
-    dispatch_nodes_post = None
-    dispatch_public_system_get = None
-    dispatch_links_delete = None
-    dispatch_links_get = None
-    dispatch_links_post = None
-    dispatch_runtime_get = None
-    build_encrypted_backup = None
-    list_server_backups = None
-    migrate_backup_over_ssh = None
-    normalize_panel_url = None
-    restore_encrypted_backup = None
-    APP_LOGO_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='#07100f'/><path d='M14 25h36M50 25l-8-8M50 25l-8 8M50 39H14M14 39l8-8M14 39l8 8' stroke='#20c7b5' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>"
-    INDEX_HTML = "<!doctype html><html><head><meta charset='utf-8'><title>P00RIJA TUNNEL</title></head><body><h1>P00RIJA TUNNEL</h1><p>Panel UI module is not available.</p></body></html>"
-    PANEL_PAGE_ROUTES = ("/", "/index.html")
-    build_manifest = lambda: b"{}"
-    font_content_type = lambda path: "application/octet-stream"
-    service_worker_script = lambda: b""
-    core_build_system_audit = None
-    core_check_engine_updates = None
-    node_version_status = None
-    host_control_available = None
-    host_control_status = None
-    submit_host_control = None
+from p00rija_core.engines import (
+    build_engine_catalog,
+    engine_binary_path as core_engine_binary_path,
+    list_engine_status as core_list_engine_status,
+    control_engine_process as core_control_engine_process,
+    check_engine_health as core_check_engine_health,
+    install_engine_archive as core_install_engine_archive,
+    safe_extract_tar as core_safe_extract_tar,
+    safe_extract_zip as core_safe_extract_zip,
+)
+from p00rija_core.tunnel_methods import (
+    EXTRA_ENGINE_CATALOG,
+    EXTRA_TUNNEL_ENGINES,
+    EXTRA_TUNNEL_MODES,
+    EXTRA_TRANSPORTS,
+    EXTRA_TUNNEL_PROFILES,
+    TUNNEL_OPTION_MATRIX_EXTRA,
+    aead_config_for_link,
+    amneziawg_config_for_link,
+    default_tunnel_profiles,
+    ensure_tunnel_profiles as core_ensure_tunnel_profiles,
+    hedioum_config_for_link,
+    hysteria2_config_for_link,
+    muxquantum_config_for_link,
+    phormal_config_for_link,
+    profile_decision_metadata,
+    raw_socket_config_for_link,
+    rating_level,
+    ssh_config_for_link,
+    singbox_config_for_link,
+    masque_config_for_link,
+    stunnel_config_for_link,
+    wireguard_config_for_link,
+    xray_config_for_link,
+)
+from p00rija_core.security import (
+    assert_safe_remote_url,
+    certificate_is_self_signed,
+    ensure_within,
+    generate_local_panel_certificate,
+    make_node_keypair,
+    make_totp_secret,
+    node_public_from_private,
+    normalize_cert_host,
+    normalize_node_token,
+    normalize_role,
+    role_matches,
+    unique_cert_hosts,
+    valid_node_signature,
+    verify_totp,
+)
+from p00rija_core.setup_wizard import start_setup_wizard
+from p00rija_core.metrics import (
+    NetSpeedometer,
+    get_cpu_percent,
+    get_host_info,
+    get_own_rss_kb,
+    get_ram_percent,
+)
+from p00rija_core.database import P00RIJADB, hash_password, verify_password, password_needs_upgrade
+from p00rija_core.api import describe_api_surface, dispatch_dashboard_get, dispatch_node_ssh_request, dispatch_nodes_get, dispatch_nodes_post, dispatch_public_system_get
+from p00rija_core.links_api import dispatch_links_delete, dispatch_links_get, dispatch_links_post
+from p00rija_core.runtime_api import dispatch_runtime_get
+from p00rija_core.backup_migration import (
+    build_encrypted_backup,
+    list_server_backups,
+    migrate_backup_over_ssh,
+    normalize_panel_url,
+    restore_encrypted_backup,
+)
+from p00rija_core.ui import (
+    APP_LOGO_SVG,
+    INDEX_HTML,
+    PANEL_PAGE_ROUTES,
+    build_manifest,
+    font_content_type,
+    service_worker_script,
+)
+from p00rija_core.system_audit import build_system_audit as core_build_system_audit
+from p00rija_core.engine_updates import (
+    check_engine_updates as core_check_engine_updates,
+    clear_engine_update_cache as core_clear_engine_update_cache,
+)
+from p00rija_core.versioning import node_version_status
+from p00rija_core.host_control import (
+    host_control_available,
+    host_control_status,
+    submit_host_control,
+)
+from p00rija_core.mirror_selector import full_reprobe as core_mirror_reprobe
+from p00rija_core.protocol_advisor import recommend_profiles as core_recommend_profiles
 
 # --------- Constants & Configuration ----------
 CONFIG_DIR = os.environ.get("P00RIJA_CONFIG_DIR", "/opt/p00rija")
@@ -212,10 +152,11 @@ BUF_COPY = env_int("P00RIJA_COPY_BUFFER_BYTES", 512 * 1024, 64 * 1024)
 POOL_WAIT = env_float("P00RIJA_POOL_WAIT", 5.0, 0.5)
 SYNC_INTERVAL = env_float("P00RIJA_SYNC_INTERVAL", 3.0, 1.0)
 DIAL_TIMEOUT = env_float("P00RIJA_DIAL_TIMEOUT", 5.0, 1.0)
+DEBUG_DIAL_ENABLED = os.environ.get("P00RIJA_DEBUG_DIAL", "").lower() in ("1", "true", "yes", "on")
 NODE_UPDATE_DOWNLOAD_TIMEOUT = env_int("P00RIJA_NODE_UPDATE_DOWNLOAD_TIMEOUT", 1800, 60)
 NODE_UPDATE_DOWNLOAD_RETRIES = env_int("P00RIJA_NODE_UPDATE_DOWNLOAD_RETRIES", 4, 1)
-APP_VERSION = "1.9.95"
-APP_BUILD = "speedtest-preflight-cleanup-hotfix-20260621"
+APP_VERSION = "1.9.99"
+APP_BUILD = "release-1.9.99-20260722"
 APP_LICENSE = "GPL-3.0"
 APP_AUTHOR_GITHUB = "https://github.com/Poorija"
 APP_AUTHOR_EMAIL = "mohammadmahdi.farhadianfard@gmail.com"
@@ -394,17 +335,20 @@ def tune_listener_socket(sock: socket.socket):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 def dial_tcp(ip, port):
-    db.log("system", "info", f"[DEBUG] dial_tcp attempting to connect to {ip}:{port}")
+    if DEBUG_DIAL_ENABLED:
+        db.log("system", "info", f"[DEBUG] dial_tcp attempting to connect to {ip}:{port}")
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     tune_tcp(s)
     s.settimeout(DIAL_TIMEOUT)
     try:
         s.connect((ip, port))
         s.settimeout(None)
-        db.log("system", "info", f"[DEBUG] dial_tcp SUCCESS connecting to {ip}:{port}")
+        if DEBUG_DIAL_ENABLED:
+            db.log("system", "info", f"[DEBUG] dial_tcp SUCCESS connecting to {ip}:{port}")
         return s
     except Exception as e:
-        db.log("system", "error", f"[DEBUG] dial_tcp FAILED connecting to {ip}:{port}: {e}")
+        if DEBUG_DIAL_ENABLED:
+            db.log("system", "error", f"[DEBUG] dial_tcp FAILED connecting to {ip}:{port}: {e}")
         try:
             s.close()
         except Exception:
@@ -439,19 +383,23 @@ def is_socket_alive(sock):
             return True
         data = sock.recv(1, socket.MSG_PEEK)
         if data == b"":
-            db.log("system", "error", f"[DEBUG] is_socket_alive: socket closed by peer (recv returned b'')")
+            if DEBUG_DIAL_ENABLED:
+                db.log("system", "error", "[DEBUG] is_socket_alive: socket closed by peer (recv returned b'')")
             return False
         return True
     except BlockingIOError:
         return True
     except Exception as e:
-        db.log("system", "error", f"[DEBUG] is_socket_alive: exception {e}")
+        if DEBUG_DIAL_ENABLED:
+            db.log("system", "error", f"[DEBUG] is_socket_alive: exception {e}")
         return False
 
 def clamp_int(value, default, minimum, maximum):
     try:
         value = int(value)
     except Exception:
+        return default
+    if value == 0:
         return default
     return max(minimum, min(maximum, value))
 
@@ -518,7 +466,8 @@ def read_runtime_network_mode():
     try:
         path = os.path.join(CONFIG_DIR, ".network_mode")
         if os.path.exists(path):
-            mode = open(path, "r").read().strip()
+            with open(path, "r") as f:
+                mode = f.read().strip()
             if mode in ("host", "bridge"):
                 return mode
     except Exception:
@@ -562,8 +511,10 @@ def binary_advertises_feature(binary, feature):
 
 def runtime_transport_capabilities():
     brutal_available = os.path.isdir("/sys/module/brutal")
+    available_cc = []
     try:
-        available_cc = open("/proc/sys/net/ipv4/tcp_available_congestion_control", "r").read().split()
+        with open("/proc/sys/net/ipv4/tcp_available_congestion_control", "r") as f:
+            available_cc = f.read().split()
         brutal_available = brutal_available or "brutal" in available_cc
     except Exception:
         available_cc = []
@@ -603,7 +554,10 @@ def read_docker_host_gateway():
 def read_published_port_ranges():
     try:
         path = os.path.join(CONFIG_DIR, ".publish_ranges")
-        return open(path, "r").read().strip() if os.path.isfile(path) else ""
+        if os.path.isfile(path):
+            with open(path, "r") as f:
+                return f.read().strip()
+        return ""
     except Exception:
         return ""
 
@@ -692,9 +646,12 @@ def normalize_tags(value):
 def ensure_panel_secret():
     os.makedirs(CONFIG_DIR, exist_ok=True)
     if not os.path.exists(PANEL_SECRET_PATH):
-        with open(PANEL_SECRET_PATH, "w") as f:
-            f.write(secrets.token_urlsafe(48))
-        os.chmod(PANEL_SECRET_PATH, 0o600)
+        try:
+            fd = os.open(PANEL_SECRET_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(secrets.token_urlsafe(48))
+        except FileExistsError:
+            pass
     with open(PANEL_SECRET_PATH, "r") as f:
         return f.read().strip()
 
@@ -702,8 +659,8 @@ def encrypt_json_to_file(payload, path):
     secret = ensure_panel_secret()
     raw = json.dumps(payload, ensure_ascii=False).encode()
     proc = subprocess.run(
-        ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-salt", "-pass", f"pass:{secret}", "-out", path],
-        input=raw,
+        ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-salt", "-pass", "stdin", "-out", path],
+        input=secret.encode() + b"\n" + raw,
         capture_output=True
     )
     if proc.returncode != 0:
@@ -716,10 +673,24 @@ def decrypt_json_from_file(path, default=None):
     if not os.path.exists(path):
         return default
     secret = ensure_panel_secret()
-    proc = subprocess.run(
-        ["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", f"pass:{secret}", "-in", path],
-        capture_output=True
-    )
+    stdin_data = secret.encode() + b"\n"
+    # Try the hardened iteration count first, then fall back to the legacy default (10000)
+    # so databases created before this upgrade still decrypt.
+    for iter_arg in ("200000", "10000"):
+        proc = subprocess.run(
+            ["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", iter_arg, "-pass", "stdin", "-in", path],
+            input=stdin_data,
+            capture_output=True
+        )
+        if proc.returncode == 0:
+            break
+    if proc.returncode != 0:
+        # Last resort: try without explicit -iter (OpenSSL default).
+        proc = subprocess.run(
+            ["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", "stdin", "-in", path],
+            input=stdin_data,
+            capture_output=True
+        )
     if proc.returncode != 0:
         return default
     try:
@@ -746,14 +717,18 @@ def sanitize_ssh_credential(cred):
         "port": cred.get("port", 22),
         "username": cred.get("username", ""),
         "auth_method": cred.get("auth_method", "password"),
+        "shell": cred.get("shell", "fish"),
         "has_password": bool(cred.get("password")),
         "has_private_key": bool(cred.get("private_key")),
         "saved_at": cred.get("saved_at", 0)
     }
 
 def safe_ping_host(host, count=1, timeout=1):
+    host = str(host or "")
     if not host:
         return {"ok": False, "avg_ms": None, "loss": 100, "output": "No host"}
+    if host.startswith("-") or not re.fullmatch(r"[A-Za-z0-9.:-]+", host):
+        return {"ok": False, "avg_ms": None, "loss": 100, "output": "Invalid host"}
     try:
         res = subprocess.run(["ping", "-c", str(count), "-W", str(timeout), str(host)], capture_output=True, text=True, timeout=max(2, count * (timeout + 1)))
         output = (res.stdout or "") + (res.stderr or "")
@@ -918,6 +893,37 @@ def check_node_versions(node_id=""):
         node_id=str(node_id or ""),
     )
 
+def reprobe_mirrors(force_apply=False):
+    """Probe APT/Docker mirrors and (optionally) apply the fastest reachable ones.
+
+    Exposed via /api/mirrors/probe and /api/mirrors/apply so the panel can pick the
+    best repository for this server and its connections at any time, not just at install.
+    """
+    if not core_mirror_reprobe:
+        return {"success": False, "error": "Mirror selector module is unavailable"}
+    try:
+        report = core_mirror_reprobe(force_apply=bool(force_apply))
+        report["success"] = True
+        return report
+    except Exception as exc:  # pragma: no cover - defensive guard for the API surface
+        return {"success": False, "error": f"Mirror probe failed: {exc}"}
+
+def advise_protocols(scenario=None):
+    """Recommend the best tunnel profile(s) for this server's network conditions.
+
+    Exposed via /api/protocols/advise so the panel can surface 2025-2026 anti-DPI
+    strategy guidance (AnyTLS, XHTTP split, REALITY→Hysteria2 chains, etc.).
+    """
+    if not core_recommend_profiles:
+        return {"success": False, "error": "Protocol advisor module is unavailable"}
+    try:
+        region = os.environ.get("P00RIJA_SERVER_REGION", "global").lower()
+        if region not in ("ir", "global"):
+            region = "global"
+        return core_recommend_profiles(region=region, scenario=scenario)
+    except Exception as exc:  # pragma: no cover - defensive guard for the API surface
+        return {"success": False, "error": f"Protocol advisor failed: {exc}"}
+
 def install_engine_from_github(engine_type):
     if engine_type not in ENGINE_CATALOG:
         raise ValueError("Unknown engine")
@@ -954,7 +960,33 @@ def install_engine_from_github(engine_type):
         installed.append(binary)
     manifest_source = os.path.join(persistent_dir, "manifest.json")
     if os.path.isfile(manifest_source):
-        shutil.copy2(manifest_source, os.path.join(ENGINES_DIR, "manifest.json"))
+        manifest_target = os.path.join(ENGINES_DIR, "manifest.json")
+        try:
+            with open(manifest_source, "r", encoding="utf-8") as f:
+                incoming_manifest = json.load(f)
+        except Exception:
+            incoming_manifest = {}
+        try:
+            with open(manifest_target, "r", encoding="utf-8") as f:
+                merged_manifest = json.load(f)
+        except Exception:
+            merged_manifest = {}
+        merged_manifest.setdefault("engines", {})
+        for key, value in (incoming_manifest.get("engines") or {}).items():
+            merged_manifest["engines"][key] = value
+        if incoming_manifest.get("generated_at"):
+            merged_manifest["generated_at"] = incoming_manifest.get("generated_at")
+        if incoming_manifest.get("failures"):
+            merged_manifest["failures"] = incoming_manifest.get("failures")
+        tmp_manifest = manifest_target + f".update-{os.getpid()}"
+        ensure_within(ENGINES_DIR, tmp_manifest)
+        tmp_fd = os.open(tmp_manifest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(merged_manifest, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp_manifest, manifest_target)
+    if core_clear_engine_update_cache:
+        core_clear_engine_update_cache()
     if not installed:
         raise RuntimeError("GitHub download completed but no runtime binary was installed")
     invalidate_local_update_manifest()
@@ -979,7 +1011,7 @@ def control_engine_process(engine_id, action):
         names = [os.path.basename(p) for p in paths] + info.get("bins", [])
         for name in set(names):
             if name:
-                subprocess.run(["pkill", "-f", name], capture_output=True)
+                subprocess.run(["pkill", "-x", name], capture_output=True)
                 killed += 1
     if action in ("start", "restart"):
         for path in paths:
@@ -1036,27 +1068,39 @@ def install_engine_archive(engine_id, filename, content):
         raise ValueError("This engine is built-in and has no external binary")
     os.makedirs(ENGINES_DIR, exist_ok=True)
     installed = []
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(filename or "engine.bin"))
+    safe_name = safe_name.strip(".") or "engine.bin"
     with tempfile.TemporaryDirectory() as td:
         root = os.path.join(td, "extract")
         os.makedirs(root, exist_ok=True)
-        archive = os.path.join(td, filename or "engine.bin")
-        with open(archive, "wb") as f:
+        archive = os.path.join(td, safe_name)
+        ensure_within(td, archive)
+        archive_fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(archive_fd, "wb") as f:
             f.write(content)
-        if filename.endswith(".zip"):
+        if safe_name.endswith(".zip"):
+            if not core_safe_extract_zip:
+                raise RuntimeError("safe zip extractor unavailable")
             with zipfile.ZipFile(archive) as z:
-                z.extractall(root)
-        elif filename.endswith((".tar.gz", ".tgz")):
+                core_safe_extract_zip(z, root)
+        elif safe_name.endswith((".tar.gz", ".tgz")):
+            if not core_safe_extract_tar:
+                raise RuntimeError("safe tar extractor unavailable")
             with tarfile.open(archive, "r:gz") as t:
-                t.extractall(root)
-        elif filename.endswith((".tar.xz", ".txz")):
+                core_safe_extract_tar(t, root)
+        elif safe_name.endswith((".tar.xz", ".txz")):
+            if not core_safe_extract_tar:
+                raise RuntimeError("safe tar extractor unavailable")
             with tarfile.open(archive, "r:xz") as t:
-                t.extractall(root)
-        elif filename.endswith(".gz"):
-            out_name = filename[:-3]
-            with gzip.open(archive, "rb") as gz, open(os.path.join(root, out_name), "wb") as out:
+                core_safe_extract_tar(t, root)
+        elif safe_name.endswith(".gz"):
+            out_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(safe_name[:-3])).strip(".") or "engine.bin"
+            out_path = ensure_within(root, os.path.join(root, out_name))
+            out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            with gzip.open(archive, "rb") as gz, os.fdopen(out_fd, "wb") as out:
                 out.write(gz.read())
         else:
-            shutil.copy2(archive, os.path.join(root, filename))
+            shutil.copy2(archive, os.path.join(root, safe_name))
         for dirpath, _, filenames in os.walk(root):
             for item in filenames:
                 if item in wanted:
@@ -1123,7 +1167,7 @@ def merge_ssh_credential(node_id, body):
     vault = load_ssh_vault()
     saved = vault.get("nodes", {}).get(node_id, {})
     cred = dict(saved)
-    for key in ("host", "port", "username", "auth_method", "password", "private_key", "timeout"):
+    for key in ("host", "port", "username", "auth_method", "password", "private_key", "timeout", "shell"):
         if body.get(key) not in (None, ""):
             cred[key] = body.get(key)
     if not cred.get("host"):
@@ -1132,6 +1176,7 @@ def merge_ssh_credential(node_id, body):
     cred["timeout"] = clamp_int(cred.get("timeout", 15), 15, 3, 120)
     cred["username"] = str(cred.get("username") or "root")[:80]
     cred["auth_method"] = cred.get("auth_method", "password") if cred.get("auth_method") in ("password", "key") else "password"
+    cred["shell"] = cred.get("shell", "fish") if cred.get("shell") in ("fish", "bash", "zsh", "sh", "default") else "fish"
     return cred, vault
 
 def save_ssh_credential_if_requested(node_id, cred, vault, should_save):
@@ -1172,7 +1217,25 @@ def make_ssh_base_command(cred, interactive=False):
         base_cmd += ["-o", "BatchMode=yes"]
     if interactive:
         base_cmd += ["-tt"]
+        shell = cred.get("shell", "fish")
+        shell_commands = {
+            "fish": "command -v fish >/dev/null 2>&1 && exec fish -l || exec ${SHELL:-/bin/sh} -l",
+            "bash": "command -v bash >/dev/null 2>&1 && exec bash -l || exec ${SHELL:-/bin/sh} -l",
+            "zsh": "command -v zsh >/dev/null 2>&1 && exec zsh -l || exec ${SHELL:-/bin/sh} -l",
+            "sh": "exec /bin/sh",
+            "default": "exec ${SHELL:-/bin/sh} -l",
+        }
+        return base_cmd + [f"{username}@{host}", shell_commands.get(shell, shell_commands["fish"])], env, temp_key
     return base_cmd + [f"{username}@{host}"], env, temp_key
+
+def set_ssh_pty_size(fd, rows=28, cols=120):
+    try:
+        rows = clamp_int(rows, 28, 8, 80)
+        cols = clamp_int(cols, 120, 40, 240)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        return rows, cols
+    except Exception:
+        return 28, 120
 
 def cleanup_ssh_session(session_id):
     session = None
@@ -1230,36 +1293,60 @@ def start_ssh_session(node_id, body):
     save_ssh_credential_if_requested(node_id, cred, vault, body.get("save"))
     cmd, env, temp_key = make_ssh_base_command(cred, interactive=True)
     master_fd, slave_fd = pty.openpty()
+    rows, cols = set_ssh_pty_size(slave_fd, body.get("rows", 28), body.get("cols", 120))
     os.set_blocking(master_fd, False)
     proc = None
+    registered = False
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            env=env,
-            close_fds=True,
-            preexec_fn=os.setsid,
-        )
-    finally:
         try:
-            os.close(slave_fd)
-        except Exception:
-            pass
-    session_id = secrets.token_hex(16)
-    with ssh_sessions_lock:
-        ssh_sessions[session_id] = {
-            "node_id": node_id,
-            "proc": proc,
-            "master_fd": master_fd,
-            "temp_key": temp_key,
-            "started_at": time.time(),
-            "last_read": time.time(),
-        }
-    time.sleep(0.2)
-    output, alive = read_ssh_session_output(session_id)
-    return session_id, output, alive, sanitize_ssh_credential(cred)
+            proc = subprocess.Popen(
+                cmd,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=env,
+                close_fds=True,
+                preexec_fn=os.setsid,
+            )
+        finally:
+            try:
+                os.close(slave_fd)
+            except Exception:
+                pass
+        session_id = secrets.token_hex(16)
+        with ssh_sessions_lock:
+            ssh_sessions[session_id] = {
+                "node_id": node_id,
+                "proc": proc,
+                "master_fd": master_fd,
+                "temp_key": temp_key,
+                "started_at": time.time(),
+                "last_read": time.time(),
+                "rows": rows,
+                "cols": cols,
+            }
+        registered = True
+        time.sleep(0.2)
+        output, alive = read_ssh_session_output(session_id)
+        return session_id, output, alive, sanitize_ssh_credential(cred)
+    finally:
+        # If the session never got registered, nothing else owns these
+        # resources: close the pty master fd and drop the temporary key file.
+        if not registered:
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                os.close(master_fd)
+            except Exception:
+                pass
+            if temp_key:
+                try:
+                    os.remove(temp_key)
+                except Exception:
+                    pass
 
 def write_ssh_session(session_id, data):
     with ssh_sessions_lock:
@@ -1271,10 +1358,21 @@ def write_ssh_session(session_id, data):
         cleanup_ssh_session(session_id)
         raise RuntimeError("SSH session is closed")
     raw = str(data or "").encode("utf-8", "replace")
-    if len(raw) > 8192:
+    if len(raw) > 32768:
         raise ValueError("SSH input is too large")
     os.write(session["master_fd"], raw)
     session["last_read"] = time.time()
+
+def resize_ssh_session(session_id, rows, cols):
+    with ssh_sessions_lock:
+        session = ssh_sessions.get(session_id)
+    if not session:
+        raise KeyError("SSH session not found")
+    rows, cols = set_ssh_pty_size(session["master_fd"], rows, cols)
+    session["rows"] = rows
+    session["cols"] = cols
+    session["last_read"] = time.time()
+    return {"rows": rows, "cols": cols}
 
 def prune_ssh_sessions(max_idle=900):
     now = time.time()
@@ -1433,7 +1531,7 @@ def build_smart_tunnel_benchmark(internal_id, external_id, direction="external_t
         try:
             cmd_id = queue_smart_probe_command(source_id, target_node.get("ip"), ports=probe_ports)
             probe_result = wait_for_node_command_result(source_id, cmd_id, timeout=45)
-            if probe_result:
+            if probe_result and not probe_result.get("pending"):
                 node_path_probe = probe_result.get("result", {}) or {}
                 node_path_probe["source_node_id"] = source_id
             else:
@@ -1512,7 +1610,8 @@ def build_smart_tunnel_benchmark(internal_id, external_id, direction="external_t
     engine_aliases = {
         "singbox": "singbox", "sing-box": "singbox", "amneziawg": "amneziawg",
         "wireguard": "wireguard", "ssh": "builtin", "stunnel": "stunnel",
-        "aead": "builtin", "rawsock": "builtin",
+        "aead": "builtin", "rawsock": "builtin", "phormal": "phormal",
+        "hedioum": "hedioum",
     }
     ranked = []
     excluded_profiles = []
@@ -2464,11 +2563,11 @@ def apply_panel_handoff(new_panel_url, fallback_panel_url):
     config["panel_fallback_url"] = fallback_panel_url
     config["panel_handoff_at"] = time.time()
     temp_path = f"{CONFIG_PATH}.handoff.tmp"
-    with open(temp_path, "w") as output:
+    fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as output:
         json.dump(config, output, indent=2)
         output.flush()
         os.fsync(output.fileno())
-    os.chmod(temp_path, 0o600)
     os.replace(temp_path, CONFIG_PATH)
     return {
         "success": True,
@@ -2478,6 +2577,10 @@ def apply_panel_handoff(new_panel_url, fallback_panel_url):
     }
 
 def execute_node_commands(panel_url, token, private_key, commands):
+    # SSRF guard: validate the panel base URL once before any request fan-out.
+    assert_safe_remote_url(str(panel_url or "").rstrip("/") + "/")
+    if not _outbound_url_is_safe(str(panel_url or "").rstrip("/") + "/"):
+        raise ValueError(f"Refusing unsafe panel URL: {panel_url}")
     for command in commands or []:
         command_type = command.get("type")
         cmd_id = command.get("id")
@@ -2700,21 +2803,18 @@ def run_tunnel_payload_transfer(host, port, total_bytes, timeout=30):
 
 def queue_payload_echo_command(node_id, target_port, duration=60):
     cmd_id = secrets.token_hex(8)
-    commands = db.data.setdefault("node_commands", {})
-    commands.setdefault(node_id, []).append({
+    db.update(lambda data: data.setdefault("node_commands", {}).setdefault(node_id, []).append({
         "id": cmd_id,
         "type": "payload_test_echo",
         "port": int(target_port),
         "duration": int(duration),
         "created_at": time.time()
-    })
-    db.save()
+    }))
     return cmd_id
 
 def queue_payload_client_command(node_id, user_port, size_mb=4):
     cmd_id = secrets.token_hex(8)
-    commands = db.data.setdefault("node_commands", {})
-    commands.setdefault(node_id, []).append({
+    db.update(lambda data: data.setdefault("node_commands", {}).setdefault(node_id, []).append({
         "id": cmd_id,
         "type": "payload_test_client",
         "host": "127.0.0.1",
@@ -2722,34 +2822,29 @@ def queue_payload_client_command(node_id, user_port, size_mb=4):
         "size_mb": int(size_mb),
         "timeout": 60,
         "created_at": time.time()
-    })
-    db.save()
+    }))
     return cmd_id
 
 def queue_payload_echo_stop_command(node_id, target_port):
     cmd_id = secrets.token_hex(8)
-    commands = db.data.setdefault("node_commands", {})
-    commands.setdefault(node_id, []).append({
+    db.update(lambda data: data.setdefault("node_commands", {}).setdefault(node_id, []).append({
         "id": cmd_id,
         "type": "payload_test_echo_stop",
         "port": int(target_port),
         "created_at": time.time()
-    })
-    db.save()
+    }))
     return cmd_id
 
 def queue_smart_probe_command(node_id, target_host, ports=None):
     cmd_id = secrets.token_hex(8)
     safe_ports = [int(p) for p in (ports or (22, 80, 443, 8080, 8443)) if valid_port(p)][:8]
-    commands = db.data.setdefault("node_commands", {})
-    commands.setdefault(node_id, []).append({
+    db.update(lambda data: data.setdefault("node_commands", {}).setdefault(node_id, []).append({
         "id": cmd_id,
         "type": "smart_probe",
         "target_host": str(target_host or ""),
         "ports": safe_ports or [22, 80, 443, 8080, 8443],
         "created_at": time.time()
-    })
-    db.save()
+    }))
     return cmd_id
 
 
@@ -2766,8 +2861,7 @@ def queue_speedtest_command(node_id, command_type, **payload):
         "created_at": time.time(),
         **payload,
     }
-    db.data.setdefault("node_commands", {}).setdefault(node_id, []).append(command)
-    db.save()
+    db.update(lambda data: data.setdefault("node_commands", {}).setdefault(node_id, []).append(command))
     return cmd_id
 
 
@@ -2792,7 +2886,7 @@ def ensure_speedtest_nodes_ready(node_ids, timeout=660):
     for node_id, command_id in pending.items():
         report = wait_for_node_command_result(node_id, command_id, timeout=timeout)
         node_name = db.data.get("nodes", {}).get(node_id, {}).get("name", node_id)
-        if not report:
+        if not report or report.get("pending"):
             raise RuntimeError(
                 f"Timed out while installing/checking iperf3 on {node_name}; "
                 "the node did not return a command result"
@@ -2848,7 +2942,7 @@ def run_node_pair_iperf_test(source_id, target_id, options):
         if not server_result.get("success"):
             detail = server_result.get("error") or (
                 "the target did not return a server-start result within 75 seconds"
-                if not server_report else "unknown server-start failure"
+                if not server_report or server_report.get("pending") else "unknown server-start failure"
             )
             raise RuntimeError(f"Target node could not start iperf3: {detail}")
         client_id = queue_speedtest_command(
@@ -2928,7 +3022,7 @@ def _run_speedtest_job(job_id, request):
                         timeout=clamp_int(options.get("duration", 8), 8, 1, 30) + 90,
                     )
                     result = (report or {}).get("result") or {}
-                    if not report:
+                    if not report or report.get("pending"):
                         raise RuntimeError("Node did not return an iperf3 client result")
                     if not result.get("success"):
                         raise RuntimeError(result.get("error") or "Internet iperf3 test failed")
@@ -3185,13 +3279,15 @@ def queue_node_update(node_id=None, scope="app_engines", restart=True):
     if not include_engines and not include_app:
         raise ValueError("Invalid update scope")
     now = time.time()
-    commands = db.data.setdefault("node_commands", {})
     queued = []
+    inserts = []
+    promotes = []
     for nid, node in db.data.get("nodes", {}).items():
         if node_id and nid != node_id:
             continue
         if node.get("status") != "online" or now - node.get("last_seen", 0) > 30:
             continue
+        commands = db.data.get("node_commands", {})
         existing_update = next(
             (
                 command for command in commands.get(nid, [])
@@ -3201,8 +3297,7 @@ def queue_node_update(node_id=None, scope="app_engines", restart=True):
             None,
         )
         if existing_update:
-            pending = commands.setdefault(nid, [])
-            pending[:] = [existing_update] + [cmd for cmd in pending if cmd is not existing_update]
+            promotes.append((nid, existing_update))
             queued.append({
                 "node_id": nid,
                 "name": node.get("name", nid),
@@ -3237,11 +3332,7 @@ def queue_node_update(node_id=None, scope="app_engines", restart=True):
             "package_size": package.get("size", 0),
             "created_at": now,
         }
-        # Updates are control-plane critical and must not be starved behind
-        # periodic optimizer/guardian work. Node config polling intentionally
-        # returns a bounded command window, so keep the update at the front.
-        commands.setdefault(nid, []).insert(0, command)
-        node["last_update_queued_at"] = now
+        inserts.append((nid, command))
         queued.append({
             "node_id": nid,
             "name": node.get("name", nid),
@@ -3250,7 +3341,21 @@ def queue_node_update(node_id=None, scope="app_engines", restart=True):
             "package_size": package.get("size", 0),
         })
     if queued:
-        db.save()
+        def _apply_updates(data):
+            commands = data.setdefault("node_commands", {})
+            for nid, existing in promotes:
+                pending = commands.setdefault(nid, [])
+                pending[:] = [existing] + [cmd for cmd in pending if cmd is not existing]
+            for nid, command in inserts:
+                # Updates are control-plane critical and must not be starved
+                # behind periodic optimizer/guardian work. Node config polling
+                # intentionally returns a bounded command window, so keep the
+                # update at the front.
+                commands.setdefault(nid, []).insert(0, command)
+                node_ref = data.get("nodes", {}).get(nid)
+                if node_ref is not None:
+                    node_ref["last_update_queued_at"] = command["created_at"]
+        db.update(_apply_updates)
         db.log("panel", "info", f"Queued remote node update for {len(queued)} node(s), scope={scope}, restart={restart}.")
     return {"success": True, "queued": queued, "queued_count": len(queued), "version": APP_VERSION, "scope": scope, "delta": True}
 
@@ -3259,7 +3364,7 @@ def node_can_download_update_package(node_token, package_id):
     if not token or not package_id:
         return False
     for nid, node in db.data.get("nodes", {}).items():
-        if node.get("token") != token:
+        if not hmac.compare_digest(str(node.get("token") or ""), token):
             continue
         for command in db.data.setdefault("node_commands", {}).get(nid, []):
             if command.get("type") == "node_update" and command.get("package_id") == package_id:
@@ -3271,7 +3376,7 @@ def node_for_update_package_download(node_token, package_id):
     if not token or not package_id:
         return "", {}
     for nid, node in db.data.get("nodes", {}).items():
-        if node.get("token") != token:
+        if not hmac.compare_digest(str(node.get("token") or ""), token):
             continue
         for command in db.data.setdefault("node_commands", {}).get(nid, []):
             if command.get("type") == "node_update" and command.get("package_id") == package_id:
@@ -3288,12 +3393,36 @@ def node_update_package_path(package_id):
     return path
 
 def _safe_extract_tar(tf, dest):
+    try:
+        # Python's "data" filter rejects absolute paths, traversal, unsafe
+        # links, and device files without writing anything for bad members.
+        tf.extractall(dest, filter="data")
+        return
+    except TypeError:
+        pass  # Older Python without the filter= parameter: fall back below.
     dest_real = os.path.realpath(dest)
     for member in tf.getmembers():
-        target = os.path.realpath(os.path.join(dest, member.name))
+        name = member.name
+        if name.startswith("/") or name.startswith("\\") or ".." in name.replace("\\", "/").split("/"):
+            raise ValueError(f"Unsafe path in update package: {name}")
+        if member.issym() or member.islnk():
+            raise ValueError(f"Unsupported link entry in update package: {name}")
+        target = os.path.realpath(os.path.join(dest, name))
         if not target.startswith(dest_real + os.sep) and target != dest_real:
-            raise ValueError(f"Unsafe path in update package: {member.name}")
+            raise ValueError(f"Unsafe path in update package: {name}")
     tf.extractall(dest)
+
+def _sanitize_relative_path(value):
+    """Restrict manifest-relative paths to safe filename components."""
+    parts = [re.sub(r"[^A-Za-z0-9_.-]", "_", part) for part in str(value or "").split("/")]
+    return "/".join(part for part in parts if part not in ("", ".", ".."))
+
+def _sha256_matches(actual_hex, expected):
+    """Timing-safe hex digest comparison; rejects missing or malformed values."""
+    expected = str(expected or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return False
+    return hmac.compare_digest(str(actual_hex or "").lower(), expected)
 
 def _replace_path(src, dst, backup_root):
     if not os.path.exists(src):
@@ -3321,12 +3450,20 @@ def _replace_path(src, dst, backup_root):
 def download_node_update_package(panel_url, token, private_key, package_id, expected_sha):
     import urllib.request
     import urllib.error
+    safe_package_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(package_id or ""))
+    if not safe_package_id:
+        raise ValueError("Invalid update package id")
+    package_id = safe_package_id
     path = f"/api/node-update-package?package_id={package_id}"
     url = f"{panel_url.rstrip('/')}{path}"
+    # SSRF guard: validate scheme/host/resolved IPs before any request is built.
+    assert_safe_remote_url(url)
+    if not _outbound_url_is_safe(url):
+        raise ValueError(f"Refusing unsafe update URL: {url}")
     base_headers = {"X-Node-Token": normalize_node_token(token)}
     if private_key:
         base_headers["X-Node-Signature"] = hmac.new(private_key.encode(), f"{path}\n".encode(), hashlib.sha256).hexdigest()
-    ctx = ssl._create_unverified_context()
+    ctx = _node_panel_ssl_context()
     download_dir = os.path.join(CONFIG_DIR, "updates")
     os.makedirs(download_dir, exist_ok=True)
     destination = os.path.join(download_dir, f"{package_id}.tar.gz.part")
@@ -3336,6 +3473,9 @@ def download_node_update_package(panel_url, token, private_key, package_id, expe
         headers = dict(base_headers)
         if offset:
             headers["Range"] = f"bytes={offset}-"
+        assert_safe_remote_url(url)
+        if not _outbound_url_is_safe(url):
+            raise ValueError(f"Refusing unsafe update URL: {url}")
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=NODE_UPDATE_DOWNLOAD_TIMEOUT, context=ctx) as response:
@@ -3356,12 +3496,12 @@ def download_node_update_package(panel_url, token, private_key, package_id, expe
     if last_error is not None:
         raise RuntimeError(f"Update download failed after {NODE_UPDATE_DOWNLOAD_RETRIES} attempts: {last_error}")
     digest, _download_size = _sha256_file(destination)
-    if expected_sha and digest != expected_sha:
+    if not _sha256_matches(digest, expected_sha):
         try:
             os.remove(destination)
         except Exception:
             pass
-        raise ValueError("Downloaded update package sha256 mismatch")
+        raise ValueError("Downloaded update package sha256 missing or mismatched")
     final_path = destination[:-5]
     os.replace(destination, final_path)
     return final_path, digest
@@ -3373,22 +3513,41 @@ def apply_node_update_package(package, scope="app_engines"):
     os.makedirs(backup_root, exist_ok=True)
     applied = []
     with tempfile.TemporaryDirectory() as td:
-        archive = package if isinstance(package, str) else os.path.join(td, "node-update.tar.gz")
-        if not isinstance(package, str):
-            with open(archive, "wb") as f:
-                f.write(package)
+        archive = os.path.join(td, "node-update.tar.gz")
+        archive_fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        if isinstance(package, str):
+            source_path = os.path.realpath(package)
+            if ".." in source_path.split(os.sep) or not os.path.isfile(source_path):
+                raise ValueError("Update package path is invalid")
+            with open(source_path, "rb") as src, os.fdopen(archive_fd, "wb") as out:
+                out.write(src.read())
+        else:
+            with os.fdopen(archive_fd, "wb") as out:
+                out.write(package)
         extract_dir = os.path.join(td, "extract")
         os.makedirs(extract_dir, exist_ok=True)
         with tarfile.open(archive, "r:gz") as tf:
             _safe_extract_tar(tf, extract_dir)
         manifest_path = os.path.join(extract_dir, "update_manifest.json")
-        manifest = json.load(open(manifest_path, encoding="utf-8")) if os.path.isfile(manifest_path) else {}
-        for relative_path, expected in (manifest.get("files") or {}).items():
+        manifest = {}
+        if os.path.isfile(manifest_path):
+            with open(manifest_path, encoding="utf-8") as source:
+                manifest = json.load(source)
+        for raw_relative_path, expected in (manifest.get("files") or {}).items():
+            # Manifest keys come from the panel payload; keep every component
+            # to safe filename characters before any path join.
+            relative_path = _sanitize_relative_path(raw_relative_path)
+            if not relative_path:
+                raise ValueError("Update payload contains an invalid file path")
             src = os.path.join(extract_dir, relative_path)
             if not os.path.isfile(src):
                 raise ValueError(f"Update payload is missing {relative_path}")
             digest, size = _sha256_file(src)
-            if digest != expected.get("sha256") or size != int(expected.get("size") or -1):
+            try:
+                expected_size = int(expected.get("size") or -1)
+            except (TypeError, ValueError):
+                expected_size = -1
+            if not _sha256_matches(digest, expected.get("sha256")) or size != expected_size:
                 raise ValueError(f"Update payload verification failed for {relative_path}")
             destinations = []
             if relative_path.startswith("engines/"):
@@ -3439,18 +3598,34 @@ def schedule_node_process_restart(delay=1.5):
     threading.Thread(target=_restart, daemon=True).start()
 
 def choose_temp_link_ports(link):
+    def _link_node_ids(candidate):
+        return {
+            candidate.get("internal_node_id"),
+            candidate.get("external_node_id"),
+            candidate.get("iran_node_id"),
+            candidate.get("foreign_node_id"),
+        }
+
+    involved_nodes = _link_node_ids(link)
+    # Consider reservations across ALL links that share nodes with this link:
+    # two tests touching the same node pair must not claim the same ports.
+    related_links = [
+        existing for existing in db.data.get("links", {}).values()
+        if existing is link or (_link_node_ids(existing) & involved_nodes)
+    ]
     used = set()
-    for field in ("bridge_port", "sync_port"):
-        try:
-            used.add(int(link.get(field)))
-        except Exception:
-            pass
-    for mapping in link.get("ports", []) or []:
-        try:
-            used.add(int(mapping.get("user_port")))
-            used.add(int(mapping.get("target_port")))
-        except Exception:
-            pass
+    for candidate in related_links:
+        for field in ("bridge_port", "sync_port"):
+            try:
+                used.add(int(candidate.get(field)))
+            except Exception:
+                pass
+        for mapping in candidate.get("ports", []) or []:
+            try:
+                used.add(int(mapping.get("user_port")))
+                used.add(int(mapping.get("target_port")))
+            except Exception:
+                pass
     for _ in range(200):
         base = secrets.randbelow(20000) + 32000
         if base % 2:
@@ -3466,8 +3641,8 @@ def remove_temp_port_mapping(link, marker):
     link["ports"] = [p for p in link.get("ports", []) if p.get("_temp_test") != marker]
     return before - len(link.get("ports", []))
 
-def wait_for_node_command_result(node_id, cmd_id, timeout=45):
-    deadline = time.time() + timeout
+def wait_for_node_command_result(node_id, cmd_id, timeout=20):
+    deadline = time.time() + max(1.0, float(timeout or 20))
     while time.time() < deadline:
         try:
             node = db.data.get("nodes", {}).get(node_id, {})
@@ -3477,7 +3652,7 @@ def wait_for_node_command_result(node_id, cmd_id, timeout=45):
         except Exception:
             pass
         time.sleep(0.35)
-    return None
+    return {"id": cmd_id, "pending": True}
 
 def normalize_request_path(path):
     return (path or "/").rstrip("/") or "/"
@@ -3505,7 +3680,7 @@ def wrap_socket_server_tls(sock, cert_path, key_path):
         db.log("tls", "error", f"Failed wrapping server socket in TLS: {e}")
         raise e
 
-def wrap_socket_client_tls(sock, sni_hostname=None, ca_content=""):
+def wrap_socket_client_tls(sock, sni_hostname=None, ca_content="", insecure=False):
     try:
         if ca_content:
             context = ssl.create_default_context(cadata=ca_content)
@@ -3521,10 +3696,15 @@ def wrap_socket_client_tls(sock, sni_hostname=None, ca_content=""):
             if partial_chain:
                 context.verify_flags |= partial_chain
         else:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            # No pinned certificate material: verify against the system trust
+            # store instead of disabling verification entirely.
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_REQUIRED
+        if insecure:
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
-            db.log("tls", "warning", "Tunnel TLS certificate pin is unavailable; using compatibility mode.")
+            db.log("tls", "warning", "Link is configured with tls_insecure; tunnel TLS certificate verification is disabled.")
         server_hostname = sni_hostname if sni_hostname else "localhost"
         return context.wrap_socket(sock, server_side=False, server_hostname=server_hostname)
     except Exception as e:
@@ -3539,13 +3719,13 @@ class WSFrameParser:
         h1 = recv_exact(self.sock, 2)
         if not h1:
             return None
-        
+
         fin_opcode = h1[0]
         mask_len = h1[1]
-        
+
         has_mask = bool(mask_len & 0x80)
         length = mask_len & 0x7f
-        
+
         if length == 126:
             ext_len = recv_exact(self.sock, 2)
             if not ext_len: return None
@@ -3554,12 +3734,17 @@ class WSFrameParser:
             ext_len = recv_exact(self.sock, 8)
             if not ext_len: return None
             (length,) = struct.unpack("!Q", ext_len)
-            
+
+        # Guard against oversized-frame DoS: a peer could announce a multi-GB frame and
+        # exhaust memory/CPU. Cap to a sane ceiling for tunnel control traffic.
+        if length > MUX_MAX_FRAME_SIZE:
+            return None
+
         mask = None
         if has_mask:
             mask = recv_exact(self.sock, 4)
             if not mask: return None
-            
+
         payload = recv_exact(self.sock, length)
         if payload is None: return None
         
@@ -3964,9 +4149,9 @@ def hysteria2_binary():
 def write_runtime_json(path, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as output:
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
         json.dump(payload, output, ensure_ascii=False, indent=2)
-    os.chmod(tmp_path, 0o600)
     os.replace(tmp_path, path)
 
 def write_link_certificate_material(link):
@@ -3977,13 +4162,13 @@ def write_link_certificate_material(link):
     key_path = os.path.join(CONFIG_DIR, "certs", f"hysteria2-{link_id}.key")
     os.makedirs(os.path.dirname(cert_path), exist_ok=True)
     if cert_content:
-        with open(cert_path, "w", encoding="utf-8") as output:
+        fd = os.open(cert_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
             output.write(cert_content)
-        os.chmod(cert_path, 0o644)
     if key_content:
-        with open(key_path, "w", encoding="utf-8") as output:
+        fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
             output.write(key_content)
-        os.chmod(key_path, 0o600)
     return cert_path, key_path
 
 def terminate_engine_link_process(link_data, timeout=3.0):
@@ -4041,7 +4226,7 @@ def start_hysteria2_link(link):
     runtime_dir = os.path.join(CONFIG_DIR, "engine_runtime")
     config_path = os.path.join(runtime_dir, f"hysteria2-{safe_link_id}-{local_role}.json")
     log_path = os.path.join(runtime_dir, f"hysteria2-{safe_link_id}-{local_role}.log")
-    auth_secret = str(link.get("xray_uuid") or link_id)
+    auth_secret = str(link.get("xray_uuid") or secrets.token_urlsafe(24))
     bridge_port = int(link.get("bridge_port"))
     cert_path, key_path = write_link_certificate_material(link)
 
@@ -5313,14 +5498,108 @@ def run_thread_guardian_for_link(link_id, link_data, force=False):
         link_data["thread_guardian"] = guardian
         return guardian
 
-# Helper to connect to Panel with fallback unverified certificate context
+# Helper to connect to the Panel over verified TLS (or an explicitly opted-out one).
+_NODE_TLS_CACHE = {"key": None, "ca_path": "", "insecure": False}
+
+def _node_tls_settings():
+    """Node-side panel TLS policy from CONFIG_PATH, cached by file mtime/size."""
+    try:
+        st = os.stat(CONFIG_PATH)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None and _NODE_TLS_CACHE.get("key") == key:
+        return _NODE_TLS_CACHE["ca_path"], _NODE_TLS_CACHE["insecure"]
+    ca_path = os.environ.get("P00RIJA_PANEL_CA_PATH", "")
+    insecure = False
+    try:
+        with open(CONFIG_PATH, "r") as source:
+            node_config = json.load(source)
+        insecure = bool(node_config.get("panel_insecure_tls", False))
+        ca_path = ca_path or str(node_config.get("panel_ca_path") or "")
+    except Exception:
+        pass
+    if not ca_path:
+        default_ca = os.path.join(CONFIG_DIR, "certs", "panel-ca.crt")
+        ca_path = default_ca if os.path.isfile(default_ca) else ""
+    _NODE_TLS_CACHE.update({"key": key, "ca_path": ca_path, "insecure": insecure})
+    return ca_path, insecure
+
+def _node_panel_ssl_context():
+    """One verified SSL context: pinned panel CA if present, else system CAs."""
+    ca_path, insecure = _node_tls_settings()
+    if insecure:
+        # Explicit legacy escape hatch only; loud on purpose.
+        db.log("tls", "warning", "panel_insecure_tls is enabled in the node config: panel TLS certificates are NOT being verified. Remove this flag and pin the panel CA.")
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+    if ca_path:
+        # The pinned CA file is the identity anchor (mirrors tunnel TLS
+        # pinning): chain verification stays mandatory, hostname matching is
+        # not, because the pin may be an IP-address certificate.
+        context = ssl.create_default_context(cafile=ca_path)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_REQUIRED
+        partial_chain = getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
+        if partial_chain:
+            context.verify_flags |= partial_chain
+        return context
+    return ssl.create_default_context()
+
+def _outbound_url_is_safe(url, allow_private=False):
+    """Inline SSRF guard for every outbound panel/update request.
+
+    Accepts http/https only, rejects embedded credentials, and refuses hosts
+    that are or resolve to private/loopback/link-local/reserved addresses.
+    """
+    import ipaddress
+    import urllib.parse
+
+    try:
+        parsed = urllib.parse.urlparse(str(url))
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if parsed.username or parsed.password:
+        return False
+    host = parsed.hostname or ""
+    if not host:
+        return False
+    try:
+        candidates = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            candidates = [ipaddress.ip_address(info[4][0]) for info in socket.getaddrinfo(host, None)]
+        except (socket.gaierror, UnicodeError, ValueError, OSError):
+            return False
+    for addr in candidates:
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            if allow_private:
+                continue
+            return False
+    return True
+
+
 def make_panel_request(panel_url, path, token, payload=None, timeout=5, private_key=""):
     import urllib.request
     import urllib.error
-    
+
     url = f"{panel_url.rstrip('/')}{path}"
+    assert_safe_remote_url(url)
+    if not _outbound_url_is_safe(url):
+        raise ValueError(f"Refusing unsafe panel URL: {url}")
     headers = {"X-Node-Token": normalize_node_token(token)}
-    
+
     data_bytes = None
     if payload is not None:
         payload_text = json.dumps(payload)
@@ -5330,7 +5609,7 @@ def make_panel_request(panel_url, path, token, payload=None, timeout=5, private_
         payload_text = ""
     if private_key:
         headers["X-Node-Signature"] = hmac.new(private_key.encode(), f"{path}\n{payload_text}".encode(), hashlib.sha256).hexdigest()
-        
+
     req = urllib.request.Request(url, data=data_bytes, headers=headers)
 
     def open_request(context=None):
@@ -5346,18 +5625,26 @@ def make_panel_request(panel_url, path, token, payload=None, timeout=5, private_
             except Exception:
                 detail = ""
             raise RuntimeError(f"HTTP Error {e.code}: {detail or e.reason}") from e
-    
-    # Try verified SSL first if HTTPS
+
     if url.startswith("https://"):
+        context = _node_panel_ssl_context()
+        if context.verify_mode == ssl.CERT_NONE:
+            return open_request(context)
         try:
-            ctx = ssl.create_default_context()
-            return open_request(ctx)
-        except urllib.error.URLError:
-            # Fallback to unverified SSL on verification error
-            ctx_fallback = ssl.create_default_context()
-            ctx_fallback.check_hostname = False
-            ctx_fallback.verify_mode = ssl.CERT_NONE
-            return open_request(ctx_fallback)
+            return open_request(context)
+        except ssl.SSLError as exc:
+            raise RuntimeError(
+                f"TLS verification failed for panel {urlparse(url).hostname or url}: {exc}. "
+                "Install the panel CA certificate or set panel_insecure_tls in the node config to override."
+            ) from exc
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", None)
+            if isinstance(reason, ssl.SSLError):
+                raise RuntimeError(
+                    f"TLS verification failed for panel {urlparse(url).hostname or url}: {reason}. "
+                    "Install the panel CA certificate or set panel_insecure_tls in the node config to override."
+                ) from exc
+            raise
     else:
         # HTTP
         return open_request()
@@ -5618,13 +5905,18 @@ class IranNodeController(PanelEndpointFailoverMixin):
             cert_content = link.get("cert_content", "")
             key_content = link.get("key_content", "")
             if cert_content and key_content:
-                cert_path = f"{CONFIG_DIR}/certs/link_{link_id}.crt"
-                key_path = f"{CONFIG_DIR}/certs/link_{link_id}.key"
+                safe_link_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(link_id))
+                cert_path = os.path.join(CONFIG_DIR, "certs", f"link_{safe_link_id}.crt")
+                key_path = os.path.join(CONFIG_DIR, "certs", f"link_{safe_link_id}.key")
                 try:
                     os.makedirs(os.path.dirname(cert_path), exist_ok=True)
-                    with open(cert_path, "w") as f:
+                    ensure_within(CONFIG_DIR, cert_path)
+                    ensure_within(CONFIG_DIR, key_path)
+                    cert_fd = os.open(cert_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+                    with os.fdopen(cert_fd, "w") as f:
                         f.write(cert_content)
-                    with open(key_path, "w") as f:
+                    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "w") as f:
                         f.write(key_content)
                 except Exception as e:
                     db.log("iran-node", "error", f"Failed writing dynamic certificate to disk: {e}")
@@ -6482,6 +6774,7 @@ class ForeignNodeController(PanelEndpointFailoverMixin):
                                     conn,
                                     sni_hostname=link.get("tls_sni"),
                                     ca_content=link.get("cert_content", ""),
+                                    insecure=bool(link.get("tls_insecure", False)),
                                 )
                                 untrack_link_socket(link_data, raw_conn)
                                 track_link_socket(link_data, conn)
@@ -6995,6 +7288,18 @@ class P00RIJAThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request(self, request, client_address):
         if not self.request_slots.acquire(blocking=False):
+            body = b'{"error": "panel busy, retry shortly"}'
+            response = (
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+                b"Connection: close\r\n"
+                b"\r\n" + body
+            )
+            try:
+                request.sendall(response)
+            except Exception:
+                pass
             try:
                 request.close()
             except Exception:
@@ -7043,74 +7348,16 @@ class P00RIJAAutoTLSServer(P00RIJAThreadingHTTPServer):
 from p00rija_core.handler_runtime import bind_runtime as bind_http_handler_runtime
 P00RIJAHTTPHandler = bind_http_handler_runtime(globals())
 
-def start_setup_wizard():
-    print("==================================================")
-    print("           P00RIJA TUNNEL Setup Wizard            ")
-    print("==================================================")
-    print("Please select the role of this server:")
-    print("1) Panel (Central management web console)")
-    print("2) Internal Node (Handles local entry listeners)")
-    print("3) External Node (Establish reverse tunnels to internal nodes)")
-    role_choice = input("Selection (1-3): ").strip()
-
-    if role_choice == "1":
-        import random
-        rand_port = random.randint(10000, 60000)
-        port_input = input(f"Web panel port (default: {rand_port}): ").strip()
-        port = int(port_input) if port_input else rand_port
-        
-        api_port_input = input("Node API port (default: 8000): ").strip()
-        api_port = int(api_port_input) if api_port_input else 8000
-        
-        username = input("Admin username (default: admin): ").strip() or "admin"
-        password = ""
-        while not password:
-            password = input("Admin password (required): ").strip()
-        
-        config = {
-            "role": "panel",
-            "port": port,
-            "api_port": api_port
-        }
-        db.data["settings"]["port"] = port
-        db.data["settings"]["api_port"] = api_port
-        db.data["admin"]["username"] = username
-        db.data["admin"]["password_hash"] = hashlib.sha256(password.encode()).hexdigest()
-        db.save()
-        
-    elif role_choice in ("2", "3"):
-        role = "internal" if role_choice == "2" else "external"
-        panel_url = ""
-        while not panel_url:
-            panel_url = input("Web Panel API URL (e.g. http://1.2.3.4:8080): ").strip()
-        token = ""
-        while not token:
-            token = input("Node Token (from the Panel UI): ").strip()
-
-        config = {
-            "role": role,
-            "panel_url": panel_url.rstrip("/"),
-            "token": token
-        }
-    else:
-        print("Invalid choice. Exiting.")
-        sys.exit(1)
-
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(config, f, indent=4)
-    print(f"Configuration written to {CONFIG_PATH}. Start container/service to run.")
-
 # --------- Main Entry Point ----------
 def main():
     global runtime_controller
     if len(sys.argv) > 1 and sys.argv[1] == "--setup":
-        start_setup_wizard()
+        start_setup_wizard(db)
         sys.exit(0)
 
     if not os.path.exists(CONFIG_PATH):
         if sys.stdin.isatty():
-            start_setup_wizard()
+            start_setup_wizard(db)
         else:
             print(f"Error: configuration file '{CONFIG_PATH}' not found. Run with --setup first.")
             sys.exit(1)

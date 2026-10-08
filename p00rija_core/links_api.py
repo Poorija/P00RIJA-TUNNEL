@@ -20,17 +20,19 @@ def dispatch_links_get(
     save_db: Callable[[], Any],
     log_event: Callable[[str, str, str], Any],
     list_runtime_sessions: Callable[[], list[dict[str, Any]]],
-    hysteria2_config_for_link: Callable[[dict[str, Any], str], dict[str, Any]],
-    muxquantum_config_for_link: Callable[[str, dict[str, Any], str, str], dict[str, Any]],
-    xray_config_for_link: Callable[[dict[str, Any], str], dict[str, Any]],
-    singbox_config_for_link: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
-    masque_config_for_link: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
-    amneziawg_config_for_link: Callable[[str, dict[str, Any], str, str], dict[str, Any]] | None = None,
-    wireguard_config_for_link: Callable[[str, dict[str, Any], str, str], dict[str, Any]] | None = None,
-    ssh_config_for_link: Callable[[str, dict[str, Any], str, str], dict[str, Any]] | None = None,
-    stunnel_config_for_link: Callable[[str, dict[str, Any], str, str], dict[str, Any]] | None = None,
-    raw_socket_config_for_link: Callable[[str, dict[str, Any], str, str], dict[str, Any]] | None = None,
-    aead_config_for_link: Callable[[str, dict[str, Any], str, str], dict[str, Any]] | None = None,
+    hysteria2_config_for_link: Callable[..., dict[str, Any]],
+    muxquantum_config_for_link: Callable[..., dict[str, Any]],
+    xray_config_for_link: Callable[..., dict[str, Any]],
+    singbox_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    masque_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    amneziawg_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    wireguard_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    ssh_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    stunnel_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    raw_socket_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    aead_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    phormal_config_for_link: Callable[..., dict[str, Any]] | None = None,
+    hedioum_config_for_link: Callable[..., dict[str, Any]] | None = None,
 ) -> tuple[bool, dict[str, Any], int]:
     if path == "/api/links/toggle-pause":
         link_id = query.get("id", [None])[0]
@@ -68,62 +70,104 @@ def dispatch_links_get(
         engine = link.get("engine")
         external_id = link.get("external_node_id", link.get("foreign_node_id"))
         external_node = db_data.get("nodes", {}).get(external_id, {})
-        external_ip = external_node.get("ip") or link.get("external_ip", link.get("iran_ip", "127.0.0.1"))
+        # Never fall back to the internal (iran) node IP for the external peer.
+        # A missing external node record degrades to loopback plus a warning.
+        external_ip = str(external_node.get("ip") or link.get("external_ip") or "127.0.0.1")
+        extra_fields: dict[str, Any] = {}
+        if not external_node:
+            external_ip = "127.0.0.1"
+            extra_fields["warning"] = "external node missing"
+
+        def _persist_generated(fields: dict[str, Any]) -> None:
+            """Write generated secrets/keys back into the link record once."""
+            target_link = db_data.get("links", {}).get(link_id)
+            if not target_link:
+                return
+            changed = False
+            for key, value in fields.items():
+                if value and not target_link.get(key):
+                    target_link[key] = value
+                    changed = True
+            if changed:
+                save_db()
+
         if engine == "hysteria2":
             return True, {
-                "internal": hysteria2_config_for_link(link, "internal"),
-                "external": hysteria2_config_for_link(link, "external"),
+                **extra_fields,
+                "internal": hysteria2_config_for_link(link, "internal", peer_ip=external_ip, persist=_persist_generated),
+                "external": hysteria2_config_for_link(link, "external", peer_ip=external_ip, persist=_persist_generated),
             }, 200
         if engine == "muxquantum":
-            other_ip = link.get("external_ip", link.get("iran_ip", "127.0.0.1"))
             return True, {
-                "internal": muxquantum_config_for_link(link_id, link, "internal", other_ip),
-                "external": muxquantum_config_for_link(link_id, link, "external", other_ip),
+                **extra_fields,
+                "internal": muxquantum_config_for_link(link_id, link, "internal", external_ip, persist=_persist_generated),
+                "external": muxquantum_config_for_link(link_id, link, "external", external_ip, persist=_persist_generated),
             }, 200
         if engine == "singbox" and singbox_config_for_link:
             return True, {
-                "internal": singbox_config_for_link(link, "internal"),
-                "external": singbox_config_for_link(link, "external"),
+                **extra_fields,
+                "internal": singbox_config_for_link(link, "internal", peer_ip=external_ip, persist=_persist_generated),
+                "external": singbox_config_for_link(link, "external", peer_ip=external_ip, persist=_persist_generated),
             }, 200
         if engine == "masque" and masque_config_for_link:
             return True, {
-                "internal": masque_config_for_link(link, "internal"),
-                "external": masque_config_for_link(link, "external"),
+                **extra_fields,
+                "internal": masque_config_for_link(link, "internal", peer_ip=external_ip),
+                "external": masque_config_for_link(link, "external", peer_ip=external_ip),
             }, 200
         if engine == "amneziawg" and amneziawg_config_for_link:
             return True, {
-                "internal": amneziawg_config_for_link(link_id, link, "internal", external_ip),
-                "external": amneziawg_config_for_link(link_id, link, "external", external_ip),
+                **extra_fields,
+                "internal": amneziawg_config_for_link(link_id, link, "internal", external_ip, persist=_persist_generated),
+                "external": amneziawg_config_for_link(link_id, link, "external", external_ip, persist=_persist_generated),
             }, 200
         if engine == "wireguard" and wireguard_config_for_link:
             return True, {
-                "internal": wireguard_config_for_link(link_id, link, "internal", external_ip),
-                "external": wireguard_config_for_link(link_id, link, "external", external_ip),
+                **extra_fields,
+                "internal": wireguard_config_for_link(link_id, link, "internal", external_ip, persist=_persist_generated),
+                "external": wireguard_config_for_link(link_id, link, "external", external_ip, persist=_persist_generated),
             }, 200
         if engine == "ssh" and ssh_config_for_link:
             return True, {
+                **extra_fields,
                 "internal": ssh_config_for_link(link_id, link, "internal", external_ip),
                 "external": ssh_config_for_link(link_id, link, "external", external_ip),
             }, 200
         if engine == "stunnel" and stunnel_config_for_link:
             return True, {
+                **extra_fields,
                 "internal": stunnel_config_for_link(link_id, link, "internal", external_ip),
                 "external": stunnel_config_for_link(link_id, link, "external", external_ip),
             }, 200
         if engine == "rawsock" and raw_socket_config_for_link:
             return True, {
+                **extra_fields,
                 "internal": raw_socket_config_for_link(link_id, link, "internal", external_ip),
                 "external": raw_socket_config_for_link(link_id, link, "external", external_ip),
             }, 200
         if engine == "aead" and aead_config_for_link:
             return True, {
-                "internal": aead_config_for_link(link_id, link, "internal", external_ip),
-                "external": aead_config_for_link(link_id, link, "external", external_ip),
+                **extra_fields,
+                "internal": aead_config_for_link(link_id, link, "internal", external_ip, persist=_persist_generated),
+                "external": aead_config_for_link(link_id, link, "external", external_ip, persist=_persist_generated),
+            }, 200
+        if engine == "phormal" and phormal_config_for_link:
+            return True, {
+                **extra_fields,
+                "internal": phormal_config_for_link(link_id, link, "internal", external_ip),
+                "external": phormal_config_for_link(link_id, link, "external", external_ip),
+            }, 200
+        if engine == "hedioum" and hedioum_config_for_link:
+            return True, {
+                **extra_fields,
+                "internal": hedioum_config_for_link(link_id, link, "internal", external_ip, persist=_persist_generated),
+                "external": hedioum_config_for_link(link_id, link, "external", external_ip, persist=_persist_generated),
             }, 200
         if engine == "xray":
             return True, {
-                "internal": xray_config_for_link(link, "internal"),
-                "external": xray_config_for_link(link, "external"),
+                **extra_fields,
+                "internal": xray_config_for_link(link, "internal", peer_ip=external_ip, persist=_persist_generated),
+                "external": xray_config_for_link(link, "external", peer_ip=external_ip, persist=_persist_generated),
             }, 200
         runtime_summary = {
             "engine": engine or "builtin",
@@ -135,6 +179,7 @@ def dispatch_links_get(
             "sync_port": link.get("sync_port"),
         }
         return True, {
+            **extra_fields,
             "internal": {**runtime_summary, "role": "internal"},
             "external": {**runtime_summary, "role": "external"},
         }, 200
@@ -154,7 +199,6 @@ def _parse_port_range(port_text: str) -> tuple[int | None, int | None]:
 
 
 def _xray_key_pair(engine_binary: str | None = None) -> tuple[str, str]:
-    fallback_key = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM="
     candidates = [engine_binary] if engine_binary else []
     candidates.extend(("engines/xray", "/usr/local/bin/xray"))
     for candidate in candidates:
@@ -173,7 +217,12 @@ def _xray_key_pair(engine_binary: str | None = None) -> tuple[str, str]:
                 return private_key, public_key
         except Exception:
             continue
-    return fallback_key, fallback_key
+    # Placeholder "M"*43 keys can never complete a REALITY handshake; a missing
+    # binary must fail link creation loudly instead of persisting dead keys.
+    raise ValueError(
+        "Xray binary is unavailable — cannot generate REALITY keys. "
+        "Install the xray engine (or set the engine binary path) and retry."
+    )
 
 
 _HOST_RE = re.compile(r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -203,13 +252,16 @@ def _used_ports_for_nodes(
         node = db_data.get("nodes", {}).get(node_id, {})
         stats = node.get("stats") or {}
         node_ignored = ignored_runtime.get(str(node_id), set())
-        for value in stats.get("listening_tcp_ports", []) or []:
-            try:
-                port = int(value)
-                if 1 <= port <= 65535 and port not in node_ignored:
-                    used.add(port)
-            except Exception:
-                pass
+        # UDP listeners occupy the port namespace just as much as TCP ones, so
+        # runtime UDP ports are always included in the used set.
+        for stat_key in ("listening_tcp_ports", "listening_udp_ports"):
+            for value in stats.get(stat_key, []) or []:
+                try:
+                    port = int(value)
+                    if 1 <= port <= 65535 and port not in node_ignored:
+                        used.add(port)
+                except Exception:
+                    pass
     for existing_id, link in db_data.get("links", {}).items():
         if exclude_link_id and existing_id == exclude_link_id:
             continue
@@ -476,12 +528,38 @@ def dispatch_links_post(
         xray_protocol = body.get("xray_protocol") or profile.get("xray_protocol", "vless")
         xray_security = body.get("xray_security") or profile.get("xray_security", "reality")
         xray_flow = body.get("xray_flow") or profile.get("xray_flow", "xtls-rprx-vision")
-        xray_uuid = body.get("xray_uuid") or str(uuid.uuid4())
+        # Keep the existing uuid/secret on edit so credentials never rotate as a
+        # side effect of an unrelated link edit.
+        xray_uuid = body.get("xray_uuid") or existing_link.get("xray_uuid") or str(uuid.uuid4())
+        tunnel_secret = str(
+            existing_link.get("tunnel_secret")
+            or body.get("tunnel_secret")
+            or secrets.token_urlsafe(32)
+        )
         xray_sni = body.get("xray_sni") or profile.get("xray_sni", "www.microsoft.com")
-        xray_shortid = body.get("xray_shortid") or profile.get("xray_shortid", secrets.token_hex(8))
-        xray_private_key = body.get("xray_private_key") or profile.get("xray_private_key", "")
-        xray_public_key = body.get("xray_public_key") or profile.get("xray_public_key", "")
-        if not xray_private_key or not xray_public_key:
+        xray_shortid = (
+            body.get("xray_shortid")
+            or existing_link.get("xray_shortid")
+            or profile.get("xray_shortid")
+            or secrets.token_hex(8)
+        )
+        xray_private_key = (
+            body.get("xray_private_key")
+            or profile.get("xray_private_key")
+            or existing_link.get("xray_private_key")
+            or ""
+        )
+        xray_public_key = (
+            body.get("xray_public_key")
+            or profile.get("xray_public_key")
+            or existing_link.get("xray_public_key")
+            or ""
+        )
+        if (
+            engine in ("xray", "singbox")
+            and xray_security == "reality"
+            and not (xray_private_key and xray_public_key)
+        ):
             xray_private_key, xray_public_key = _xray_key_pair(xray_binary)
         ech_enabled = bool(body.get("ech_enabled", profile.get("ech_enabled", existing_link.get("ech_enabled", False))))
         ech_config = str(body.get("ech_config") or existing_link.get("ech_config") or "").strip()
@@ -615,6 +693,7 @@ def dispatch_links_post(
             "xray_security": xray_security,
             "xray_flow": xray_flow,
             "xray_uuid": xray_uuid,
+            "tunnel_secret": tunnel_secret,
             "xray_sni": xray_sni,
             "xray_shortid": xray_shortid,
             "xray_public_key": xray_public_key,
@@ -695,9 +774,12 @@ def dispatch_links_post(
 
     if path == "/api/links/ports/edit":
         link_id = query.get("id", [""])[0]
-        index = int(body.get("index", -1))
-        user_port = int(str(body.get("user_port", "")).strip())
-        target_port = int(str(body.get("target_port", "")).strip())
+        try:
+            index = int(body.get("index", -1))
+            user_port = int(str(body.get("user_port", "")).strip())
+            target_port = int(str(body.get("target_port", "")).strip())
+        except (ValueError, TypeError):
+            return True, {"error": "Port and index values must be integers"}, 400
         if link_id not in db_data.get("links", {}):
             return True, {"error": "Link not found"}, 404
         if not valid_port(user_port) or not valid_port(target_port):

@@ -3,6 +3,21 @@
 have() { command -v "$1" >/dev/null 2>&1; }
 export TERM="${TERM:-xterm}"
 
+# Hash a panel admin password with PBKDF2-HMAC-SHA256 + random salt (matches database.py).
+# The plaintext password is passed via the env var P00RIJA_HASH_INPUT so it never appears
+# in process args / ps output. Output format: pbkdf2_sha256$<iter>$<salt_hex>$<hash_hex>
+p00rija_hash_password() {
+  P00RIJA_HASH_INPUT="${1:-}" python3 - <<'PY'
+import hashlib, os, secrets
+password = os.environ.get("P00RIJA_HASH_INPUT", "")
+iterations = 200_000
+salt = secrets.token_bytes(16)
+digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+print(f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}")
+PY
+  unset P00RIJA_HASH_INPUT 2>/dev/null || true
+}
+
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   UI_RESET=$'\033[0m'
   UI_BOLD=$'\033[1m'
@@ -75,19 +90,37 @@ ui_msg() {
   fi
 }
 
-P00RIJA_UBUNTU_IR_MIRRORS="${P00RIJA_UBUNTU_IR_MIRRORS:-https://mirror.iranserver.com/ubuntu/}"
-P00RIJA_DEBIAN_IR_MIRRORS="${P00RIJA_DEBIAN_IR_MIRRORS:-https://deb.debian.org/debian/}"
-P00RIJA_DOCKER_IR_MIRRORS="${P00RIJA_DOCKER_IR_MIRRORS:-https://docker.iranserver.com}"
+# Smart mirror catalog — probes run by select_best_*() pick the fastest reachable one.
+# Ubuntu mirrors (IR): IranServer (primary), Shatel, official IR country mirror,
+# Arvancloud, pol.hostinja. Candidates are probe-ranked, so order is a preference only.
+P00RIJA_UBUNTU_IR_MIRRORS="${P00RIJA_UBUNTU_IR_MIRRORS:-https://mirror.iranserver.com/ubuntu/ https://mirror.shatel.ir/ubuntu/ http://ir.archive.ubuntu.com/ubuntu/ https://mirror.arvancloud.ir/ubuntu/ http://mirrors.pol.hostinja.com/ubuntu/}"
+# Debian mirrors (IR): Arvancloud, pol.hostinja.
+P00RIJA_DEBIAN_IR_MIRRORS="${P00RIJA_DEBIAN_IR_MIRRORS:-https://mirror.arvancloud.ir/debian/ http://debian.pol.hostinja.com/debian/}"
+# Docker registry mirrors (IR): svrs.tech, Kargadan, Arvancloud, kernel.ir, focker.ir,
+# plus registry.docker.ir, IranServer, Liara. Probe-ranked fastest-first.
+P00RIJA_DOCKER_IR_MIRRORS="${P00RIJA_DOCKER_IR_MIRRORS:-https://registry.ir.svrs.tech https://mirror.kargadan.ir https://docker.arvancloud.ir https://docker.kernel.ir https://focker.ir https://registry.docker.ir https://docker.iranserver.com https://registry.liara.ir}"
+# How many seconds to wait per mirror probe. Tunable for slow links.
+P00RIJA_MIRROR_PROBE_TIMEOUT="${P00RIJA_MIRROR_PROBE_TIMEOUT:-4}"
+# Set P00RIJA_SKIP_MIRROR_PROBE=1 to trust the catalog order without probing (fast, non-interactive CI).
+P00RIJA_SKIP_MIRROR_PROBE="${P00RIJA_SKIP_MIRROR_PROBE:-0}"
 
 detect_server_region() {
   if [[ "${P00RIJA_SERVER_REGION:-}" =~ ^(ir|IR)$ ]]; then echo "ir"; return 0; fi
   if [[ "${P00RIJA_SERVER_REGION:-}" =~ ^(global|GLOBAL|outside|OUTSIDE)$ ]]; then echo "global"; return 0; fi
+  # Region detection is advisory only: HTTPS endpoints, short timeouts, and a logged
+  # default of "global" when detection is unavailable. Interactive callers still
+  # confirm the result afterwards via the region prompt/menu in prepare_installer_ui.
   local cc=""
-  cc=$(curl -fsSL --max-time 3 http://ip-api.com/line?fields=countryCode 2>/dev/null || true)
+  cc=$(curl -fsSL --max-time 3 https://ip-api.com/line?fields=countryCode 2>/dev/null || true)
   [[ -z "$cc" ]] && cc=$(curl -fsSL --max-time 3 https://ipinfo.io/country 2>/dev/null || true)
   [[ -z "$cc" ]] && cc=$(curl -fsSL --max-time 3 https://ifconfig.co/country-iso 2>/dev/null || true)
   cc="${cc//$'\r'/}"
   cc="${cc//$'\n'/}"
+  if [[ -z "$cc" ]]; then
+    echo "[i] Region detection unavailable; defaulting to global repositories." >&2
+    echo "global"
+    return 0
+  fi
   [[ "$cc" == "IR" ]] && echo "ir" || echo "global"
 }
 
@@ -187,6 +220,107 @@ EOF
   fi
 }
 
+# Portable millisecond timestamp (date +%s%3N is NOT portable across GNU/BSD/macOS).
+now_ms() {
+  python3 -c 'import time;print(int(time.time()*1000))' 2>/dev/null || date +%s 2>/dev/null || echo 0
+}
+
+# Probe a single APT mirror by fetching its Release file for the current codename.
+# Prints "latency_ms" on success (>=0) or "fail" on failure.
+probe_apt_mirror() {
+  local mirror="$1" codename="$2" timeout="${P00RIJA_MIRROR_PROBE_TIMEOUT:-4}"
+  local probe_url="${mirror%/}/dists/${codename}/Release"
+  local start_ms end_ms http_code
+  if ! have curl; then echo "fail"; return 0; fi
+  start_ms=$(now_ms)
+  # NOTE: no -f here; we want the raw HTTP code so 401/403/302 reachable mirrors are counted.
+  http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$timeout" "$probe_url" 2>/dev/null || echo "000")
+  end_ms=$(now_ms)
+  if [[ "$http_code" == "200" ]]; then
+    echo $(( end_ms - start_ms ))
+  else
+    echo "fail"
+  fi
+}
+
+# Probe all APT mirrors in $1 for codename $2 and return them sorted fastest-first.
+# If P00RIJA_SKIP_MIRROR_PROBE=1 or curl is missing, returns the catalog order unchanged.
+# Output: one mirror URL per line, fastest first.
+select_best_apt_mirror() {
+  local mirrors="$1" codename="$2" mirror latency results=""
+  if [[ "$P00RIJA_SKIP_MIRROR_PROBE" == "1" || -z "$codename" ]]; then
+    printf '%s\n' $mirrors
+    return 0
+  fi
+  # Collect results into a variable first (NOT a pipeline) so we can detect "all failed".
+  for mirror in $mirrors; do
+    latency=$(probe_apt_mirror "$mirror" "$codename")
+    if [[ "$latency" != "fail" ]]; then
+      results+="${latency} ${mirror}"$'\n'
+    fi
+  done
+  if [[ -n "$results" ]]; then
+    printf '%s' "$results" | sort -n | while IFS=' ' read -r _ m; do [[ -n "$m" ]] && printf '%s\n' "$m"; done
+  else
+    printf '%s\n' $mirrors
+  fi
+}
+
+# Probe a single Docker registry mirror by issuing a lightweight v2 API request.
+# Prints "latency_ms" on success, or "fail".
+probe_docker_mirror() {
+  local mirror="$1" timeout="${P00RIJA_MIRROR_PROBE_TIMEOUT:-4}"
+  local probe_url="${mirror%/}/v2/"
+  local start_ms end_ms http_code
+  if ! have curl; then echo "fail"; return 0; fi
+  start_ms=$(now_ms)
+  # NOTE: no -f here; 200 = reachable unauthenticated catalog, 401 = reachable but requires auth (valid mirror).
+  http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$timeout" "$probe_url" 2>/dev/null || echo "000")
+  end_ms=$(now_ms)
+  if [[ "$http_code" == "200" || "$http_code" == "401" ]]; then
+    echo $(( end_ms - start_ms ))
+  else
+    echo "fail"
+  fi
+}
+
+# Probe all Docker registry mirrors in $1 and return them sorted fastest-first (all reachable ones).
+select_best_docker_mirrors() {
+  local mirrors="$1" mirror latency results=""
+  if [[ "$P00RIJA_SKIP_MIRROR_PROBE" == "1" ]]; then
+    printf '%s\n' $mirrors
+    return 0
+  fi
+  for mirror in $mirrors; do
+    latency=$(probe_docker_mirror "$mirror")
+    if [[ "$latency" != "fail" ]]; then
+      results+="${latency} ${mirror}"$'\n'
+    fi
+  done
+  if [[ -n "$results" ]]; then
+    printf '%s' "$results" | sort -n | while IFS=' ' read -r _ m; do [[ -n "$m" ]] && printf '%s\n' "$m"; done
+  else
+    printf '%s\n' $mirrors
+  fi
+}
+
+# Move the original APT sources (preserved by configure_package_mirrors) back into
+# place and drop the IR override file, so the system returns to its prior sources.
+restore_apt_sources_from_backup() {
+  local backup_dir="$1" src name
+  [[ -n "$backup_dir" && -d "$backup_dir" ]] || return 0
+  rm -f /etc/apt/sources.list.d/p00rija-iran.sources
+  while IFS= read -r -d '' src; do
+    name="$(basename "$src")"
+    if [[ "$name" == "sources.list" ]]; then
+      mv -f "$src" /etc/apt/sources.list || true
+    else
+      mv -f "$src" "/etc/apt/sources.list.d/$name" || true
+    fi
+  done < <(find "$backup_dir" -maxdepth 1 -type f \( -name '*.list' -o -name '*.sources' \) -print0 2>/dev/null)
+  ui_info "Restored original APT sources from ${backup_dir}"
+}
+
 configure_package_mirrors() {
   local region="$1"
   [[ "$region" == "ir" && -f /etc/os-release && -d /etc/apt ]] || return 0
@@ -196,44 +330,60 @@ configure_package_mirrors() {
   [[ -n "$codename" && "$distro" =~ ^(ubuntu|linuxmint|pop|debian)$ ]] || return 0
   local backup_dir="/etc/apt/p00rija-backup-$(date +%Y%m%d_%H%M%S)"
   mkdir -p "$backup_dir"
-  find /etc/apt -maxdepth 2 \( -name '*.list' -o -name '*.sources' \) -type f -print0 2>/dev/null | while IFS= read -r -d '' src; do
+  # Only touch the two canonical source locations; scanning all of /etc/apt would
+  # also sweep up files inside earlier p00rija-backup-* directories.
+  find /etc/apt/sources.list /etc/apt/sources.list.d -maxdepth 1 \( -name '*.list' -o -name '*.sources' \) -type f -print0 2>/dev/null | while IFS= read -r -d '' src; do
     cp -f "$src" "$backup_dir/$(basename "$src").bak" || true
     mv -f "$src" "$backup_dir/$(basename "$src")" || true
   done
   ui_info "APT sources backed up to ${backup_dir}"
-  apt_update_with_retries
+  apt_update_with_retries "$distro" "$codename" "$backup_dir"
 }
 
 apt_update_with_retries() {
   if ! have apt-get; then return 0; fi
-  local distro="" codename="" mirrors="" mirror=""
+  local distro="" codename="" backup_dir="${3:-}" mirrors="" mirror="" best=""
   if [[ -f /etc/os-release ]]; then
     # shellcheck disable=SC1091
     . /etc/os-release
     distro="${ID:-}"
     codename="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
   fi
+  # Allow callers to pass distro/codename explicitly (after configure_package_mirrors sources /etc/os-release).
+  distro="${1:-$distro}"
+  codename="${2:-$codename}"
   if [[ "${P00RIJA_SERVER_REGION:-}" == "ir" && -n "$codename" ]]; then
-    [[ "$distro" =~ ^(ubuntu|linuxmint|pop)$ ]] && mirrors="$P00RIJA_UBUNTU_IR_MIRRORS" || mirrors="$P00RIJA_DEBIAN_IR_MIRRORS"
-    for mirror in $mirrors; do
-      write_apt_sources "$distro" "$codename" "$mirror"
+    if [[ "$distro" =~ ^(ubuntu|linuxmint|pop)$ ]]; then mirrors="$P00RIJA_UBUNTU_IR_MIRRORS"; else mirrors="$P00RIJA_DEBIAN_IR_MIRRORS"; fi
+    ui_info "Probing APT mirrors for ${codename} (region: ir)..."
+    while IFS= read -r best; do
+      [[ -n "$best" ]] || continue
+      write_apt_sources "$distro" "$codename" "$best"
       apt-get clean >/dev/null 2>&1 || true
       rm -rf /var/lib/apt/lists/partial
-      ui_info "Running apt update using ${mirror}..."
+      ui_info "Running apt update using ${best}..."
       if apt-get update -o Acquire::Retries=2; then
-        ui_ok "APT mirror is healthy: ${mirror}"
+        ui_ok "APT mirror selected: ${best}"
         return 0
       fi
-      ui_warn "APT mirror failed: ${mirror}"
-    done
+      ui_warn "APT mirror failed at update time: ${best}"
+    done < <(select_best_apt_mirror "$mirrors" "$codename")
+    ui_warn "All IR APT mirrors failed at update time. Restoring original apt sources before falling back."
+    restore_apt_sources_from_backup "$backup_dir"
   fi
   apt-get update -o Acquire::Retries=2
 }
 
 configure_docker_mirror() {
   local region="$1"
+  local selected=""
+  if [[ "$region" == "ir" ]]; then
+    ui_info "Probing Docker registry mirrors (region: ir)..."
+    selected="$(select_best_docker_mirrors "$P00RIJA_DOCKER_IR_MIRRORS" | tr '\n' ' ')"
+    selected="${selected% }"
+    [[ -z "$selected" ]] && selected="$P00RIJA_DOCKER_IR_MIRRORS"
+  fi
   mkdir -p /etc/docker
-  python3 - "$region" "$P00RIJA_DOCKER_IR_MIRRORS" <<'PY'
+  python3 - "$region" "$selected" <<'PY'
 import json, os, sys
 path = "/etc/docker/daemon.json"
 region, mirrors_text = sys.argv[1:3]
@@ -256,12 +406,12 @@ os.replace(tmp, path)
 PY
   systemctl restart docker >/dev/null 2>&1 || true
   if [[ "$region" == "ir" ]]; then
-    ui_info "Docker registry mirror configured: ${P00RIJA_DOCKER_IR_MIRRORS}"
+    ui_info "Docker registry mirrors configured: ${selected}"
     if [[ "${P00RIJA_SKIP_DOCKER_MIRROR_PROBE:-0}" != "1" ]] && have docker; then
       if timeout 45 docker pull hello-world:latest >/dev/null 2>&1; then
-        ui_ok "Docker mirror probe succeeded."
+        ui_ok "Docker mirror functional (image pull succeeded)."
       else
-        ui_warn "Docker mirror probe failed. Keeping the mirror config, but image pulls may need network access to Docker Hub."
+        ui_warn "Docker image pull probe failed. Keeping the mirror config, but pulls may need direct Docker Hub access."
       fi
     fi
   fi

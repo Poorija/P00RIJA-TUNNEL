@@ -16,6 +16,45 @@ from urllib.parse import urlparse
 
 CONFIG_DIR = os.environ.get("P00RIJA_CONFIG_DIR", "/opt/p00rija")
 
+# --- Password hashing (PBKDF2-HMAC-SHA256, salted, backward-compatible) ---
+# Stored format: "pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>"
+# Legacy format (unsalted sha256 hex) is still VERIFIED but always upgraded on next login.
+PBKDF2_ITERATIONS = 200_000
+
+
+def hash_password(password: str) -> str:
+    """Hash a password with a fresh random salt using PBKDF2."""
+    password = password or ""
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """Verify a password against a stored hash (PBKDF2 or legacy unsalted sha256)."""
+    password = password or ""
+    stored = stored or ""
+    if stored.startswith("pbkdf2_sha256$"):
+        try:
+            parts = stored.split("$")
+            if len(parts) != 4:
+                return False
+            iterations = int(parts[1])
+            salt = bytes.fromhex(parts[2])
+            expected = bytes.fromhex(parts[3])
+        except (ValueError, IndexError):
+            return False
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(digest, expected)
+    # Legacy unsalted sha256 fallback (for databases created before this upgrade).
+    legacy = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(legacy, stored)
+
+
+def password_needs_upgrade(stored: str) -> bool:
+    """Return True if the stored hash uses the legacy unsalted sha256 scheme."""
+    return bool(stored) and not stored.startswith("pbkdf2_sha256$")
+
 
 def normalize_role(role):
     if role in ("iran", "internal"):
@@ -43,7 +82,9 @@ def normalize_node_token(token):
 def valid_node_signature(node, path, payload_text, signature):
     private_key = node.get("private_key", "")
     if not private_key:
-        return True
+        # Fail closed: unsigned nodes must be rejected unless the node record
+        # explicitly opted out of command signing.
+        return bool(node.get("signature_disabled") is True)
     expected = hmac.new(private_key.encode(), f"{path}\n{payload_text or ''}".encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature or "")
 
@@ -118,7 +159,8 @@ def generate_local_panel_certificate(host="localhost", cert_path=None, key_path=
     hosts = unique_cert_hosts(host)
     san_parts = [f"{'IP' if is_ip_address(item) else 'DNS'}:{item}" for item in hosts]
     common_name = hosts[0] if hosts else "localhost"
-    with open(cfg_path, "w") as f:
+    cfg_fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(cfg_fd, "w") as f:
         f.write(
             "[req]\n"
             "distinguished_name=req_distinguished_name\n"
@@ -162,4 +204,84 @@ def certificate_is_self_signed(cert_path):
         return bool(subject and issuer and subject == issuer)
     except Exception:
         return False
+
+
+# --- Outbound URL / path safety guards ---
+
+_FORBIDDEN_URL_SCHEMES = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+
+
+def _ip_is_private(host: str) -> bool:
+    """Return True when the host is (or resolves to) a non-public address."""
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return bool(
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        )
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError):
+        return True
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            return True
+    return False
+
+
+def assert_safe_remote_url(url: str, *, allow_private: bool = False) -> str:
+    """Validate an outbound URL before any request is issued.
+
+    Only http/https is accepted, embedded credentials are rejected, and the
+    host (IP literal or resolved name) must be public unless the caller
+    explicitly permits private peers (e.g. a panel reachable on the LAN).
+    Returns the URL unchanged for call-site convenience.
+    """
+    url = str(url or "")
+    if not _FORBIDDEN_URL_SCHEMES.match(url):
+        raise ValueError("URL must be absolute and start with a scheme")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme!r}")
+    if parsed.username or parsed.password:
+        raise ValueError("Embedded credentials in URLs are not allowed")
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError("URL has no host")
+    if not allow_private and _ip_is_private(host):
+        raise ValueError(f"Refusing non-public remote host: {host}")
+    return url
+
+
+def ensure_within(base_dir: str, target_path: str) -> str:
+    """Assert target_path resolves inside base_dir; return target_path.
+
+    Guards every write whose path is assembled from external input so a
+    traversal attempt fails loudly before any file is touched.
+    """
+    base_real = os.path.realpath(str(base_dir))
+    target_real = os.path.realpath(str(target_path))
+    if target_real != base_real and not target_real.startswith(base_real + os.sep):
+        raise ValueError(f"Refusing path outside {base_dir}: {target_path}")
+    return target_path
 

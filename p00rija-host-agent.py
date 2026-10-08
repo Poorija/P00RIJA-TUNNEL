@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import ipaddress
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -21,6 +23,11 @@ CONTROL_DIR = os.path.join(PANEL_DIR, "host_control")
 REQUEST_DIR = os.path.join(CONTROL_DIR, "requests")
 RESULT_DIR = os.path.join(CONTROL_DIR, "results")
 HEARTBEAT = os.path.join(CONTROL_DIR, "agent-heartbeat.json")
+SECRET_PATH = os.path.join(CONTROL_DIR, "agent_secret")
+REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+SUPPORTED_ACTIONS = frozenset({"certificate", "panel_ports", "panel_node"})
+# Shared-secret value; loaded or created once in main() before the request loop starts.
+AGENT_SECRET = ""
 PANEL_CONTAINER = "p00rija-panel"
 PANEL_NODE_CONTAINER = "p00rija-panel-node"
 DOMAIN_RE = re.compile(r"(?=^.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
@@ -45,6 +52,37 @@ def run(command: list[str], *, timeout: int = 600, check: bool = True) -> subpro
     return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=check)
 
 
+def load_or_create_secret() -> str:
+    """Return the shared host-control secret, creating it on first start.
+
+    The panel reads this same file (host_control/agent_secret inside its data
+    directory, i.e. /opt/p00rija/panel/host_control/agent_secret) and must put
+    the value in the "agent_secret" field of every request JSON it submits.
+    """
+    try:
+        existing = Path(SECRET_PATH).read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    value = secrets.token_urlsafe(32)
+    os.makedirs(CONTROL_DIR, mode=0o700, exist_ok=True)
+    temp = SECRET_PATH + ".tmp"
+    Path(temp).write_text(value + "\n", encoding="utf-8")
+    os.chmod(temp, 0o600)
+    os.replace(temp, SECRET_PATH)
+    return value
+
+
+def request_is_authentic(request: dict) -> bool:
+    supplied = request.get("agent_secret")
+    return (
+        isinstance(supplied, str)
+        and bool(AGENT_SECRET)
+        and secrets.compare_digest(supplied, AGENT_SECRET)
+    )
+
+
 def panel_paths() -> tuple[str, str]:
     return os.path.join(PANEL_DIR, "p00rija_config.json"), os.path.join(PANEL_DIR, "p00rija_db.json")
 
@@ -64,7 +102,7 @@ def current_image() -> str:
     try:
         return run(["docker", "inspect", "-f", "{{.Config.Image}}", PANEL_CONTAINER], timeout=20).stdout.strip()
     except Exception:
-        return "p00rija-tunnel:1.9.95"
+        return "p00rija-tunnel:1.9.99"
 
 
 def port_is_available(port: int, current_ports: set[int]) -> bool:
@@ -258,16 +296,36 @@ def change_panel_ports(payload: dict) -> dict:
     if web_port == 22 or api_port == 22:
         raise ValueError("Port 22 is reserved for SSH")
     config, db = load_panel_state()
-    old_ports = {int(config.get("port", 8080)), int(config.get("api_port", 8000))}
+    old_web_port = int(config.get("port", 8080))
+    old_api_port = int(config.get("api_port", 8000))
+    old_ports = {old_web_port, old_api_port}
     for port in {web_port, api_port}:
         if not port_is_available(port, old_ports):
             raise ValueError(f"Port {port} is already occupied on the host")
+    # Snapshot the pre-change state so we can roll back if the container cannot
+    # be recreated with the new ports.
+    config_snapshot = copy.deepcopy(config)
+    db_snapshot = copy.deepcopy(db)
     config["port"] = web_port
     config["api_port"] = api_port
     db.setdefault("settings", {})["port"] = web_port
     db.setdefault("settings", {})["api_port"] = api_port
     save_panel_state(config, db)
-    recreate_panel(web_port, api_port)
+    try:
+        recreate_panel(web_port, api_port)
+    except Exception as exc:
+        detail = str(exc)[-4000:]
+        rollback_error = ""
+        try:
+            save_panel_state(config_snapshot, db_snapshot)
+            recreate_panel(old_web_port, old_api_port)
+        except Exception as rollback_exc:
+            rollback_error = str(rollback_exc)[-2000:]
+        return {
+            "success": False,
+            "error": f"Failed to recreate the panel container with the new ports: {detail}",
+            "rollback": "restored previous ports" if not rollback_error else f"rollback failed: {rollback_error}",
+        }
     host = str(db.get("settings", {}).get("panel_host") or payload.get("host") or "127.0.0.1")
     return {
         "success": True,
@@ -313,23 +371,27 @@ def start_panel_node(payload: dict) -> dict:
 
 def handle(request: dict) -> dict:
     action = request.get("action")
+    if action not in SUPPORTED_ACTIONS:
+        raise ValueError("Unsupported host-control action")
     payload = request.get("payload") or {}
     if action == "certificate":
         return issue_certificate(payload)
     if action == "panel_ports":
         return change_panel_ports(payload)
-    if action == "panel_node":
-        return start_panel_node(payload)
-    raise ValueError("Unsupported host-control action")
+    return start_panel_node(payload)
 
 
 def main() -> None:
+    global AGENT_SECRET
     if os.geteuid() != 0:
         raise SystemExit("p00rija-host-agent must run as root")
     for path in (CONTROL_DIR, REQUEST_DIR, RESULT_DIR):
         os.makedirs(path, mode=0o700, exist_ok=True)
         os.chmod(path, 0o700)
-    lock_file = open(os.path.join(CONTROL_DIR, "agent.lock"), "w")
+    AGENT_SECRET = load_or_create_secret()
+    os.chmod(SECRET_PATH, 0o600)
+    lock_fd = os.open(os.path.join(CONTROL_DIR, "agent.lock"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    lock_file = os.fdopen(lock_fd, "w")
     fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     while True:
         atomic_json(HEARTBEAT, {"timestamp": time.time(), "pid": os.getpid()})
@@ -338,21 +400,28 @@ def main() -> None:
                 request = json.loads(path.read_text(encoding="utf-8"))
                 if time.time() < float(request.get("not_before", 0) or 0):
                     continue
-                request_id = str(request.get("id") or path.stem)
+                # The result filename ALWAYS comes from the request file's own stem so
+                # request JSON can never influence where results are written.
+                result_id = path.stem
                 started = time.time()
                 try:
+                    if not request_is_authentic(request):
+                        raise PermissionError("Invalid or missing agent_secret")
+                    raw_id = request.get("id")
+                    if raw_id is not None and not REQUEST_ID_RE.fullmatch(str(raw_id)):
+                        raise ValueError("request 'id' must match ^[A-Za-z0-9._-]{1,64}$")
                     result = handle(request)
-                    result.update({"request_id": request_id, "pending": False, "finished_at": time.time()})
+                    result.update({"request_id": result_id, "pending": False, "finished_at": time.time()})
                 except Exception as exc:
                     result = {
                         "success": False,
-                        "request_id": request_id,
+                        "request_id": result_id,
                         "pending": False,
                         "error": str(exc)[-6000:],
                         "finished_at": time.time(),
                     }
                 result["elapsed_seconds"] = round(time.time() - started, 3)
-                atomic_json(os.path.join(RESULT_DIR, f"{request_id}.json"), result)
+                atomic_json(os.path.join(RESULT_DIR, f"{result_id}.json"), result)
                 path.unlink(missing_ok=True)
             except Exception:
                 path.rename(path.with_suffix(".invalid"))

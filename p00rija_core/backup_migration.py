@@ -33,6 +33,25 @@ def _sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+# Cache digests keyed by (path, size, mtime_ns) so repeated backup listings
+# do not re-hash unchanged multi-gigabyte archives.
+_sha256_cache: dict[tuple[str, int, int], str] = {}
+
+
+def _sha256_cached(path: str) -> str:
+    try:
+        stat_result = os.stat(path)
+        cache_key = (path, stat_result.st_size, stat_result.st_mtime_ns)
+    except OSError:
+        return _sha256(path)
+    cached = _sha256_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    digest = _sha256(path)
+    _sha256_cache[cache_key] = digest
+    return digest
+
+
 def _valid_host(value: str) -> str:
     host = str(value or "").strip()
     if not host or not _HOST_RE.fullmatch(host):
@@ -100,7 +119,7 @@ cp -a "$ROOT/app/." "$TARGET/"
 chmod 0600 "$TARGET/p00rija_db.json" "$TARGET/p00rija_config.json" 2>/dev/null || true
 
 python3 - "$TARGET/p00rija_db.json" "$TARGET/p00rija_config.json" "$NEW_URL" <<'PY'
-import json, sys
+import json, os, sys
 from urllib.parse import urlparse
 db_path, config_path, new_url = sys.argv[1:4]
 with open(db_path) as f:
@@ -114,9 +133,11 @@ if new_url:
     if parsed.port:
         settings["api_port"] = parsed.port
         config["api_port"] = parsed.port
-with open(db_path, "w") as f:
+db_fd = os.open(db_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(db_fd, "w") as f:
     json.dump(db, f, indent=2)
-with open(config_path, "w") as f:
+cfg_fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(cfg_fd, "w") as f:
     json.dump(config, f, indent=2)
 PY
 
@@ -283,6 +304,13 @@ def build_encrypted_backup(
                 source = os.path.join(config_dir, directory)
             if os.path.isdir(source):
                 shutil.copytree(source, os.path.join(app_dir, directory), dirs_exist_ok=True)
+        missing_artifacts = [name for name in app_files if not os.path.isfile(os.path.join(app_dir, name))]
+        missing_artifacts += [f"{directory}/" for directory in ("p00rija_core", "fonts") if not os.path.isdir(os.path.join(app_dir, directory))]
+        if missing_artifacts:
+            raise ValueError(
+                "Backup cannot be built; files referenced by the restore Dockerfile are missing: "
+                + ", ".join(missing_artifacts)
+            )
         os.makedirs(os.path.join(app_dir, "engines"), exist_ok=True)
         if include_engines:
             source = os.path.join(config_dir, "engines")
@@ -348,7 +376,7 @@ def list_server_backups(config_dir: str) -> list[dict[str, Any]]:
             "filename": name,
             "size": stat_result.st_size,
             "created_at": stat_result.st_mtime,
-            "sha256": _sha256(path),
+            "sha256": _sha256_cached(path),
         })
     rows.sort(key=lambda item: item["created_at"], reverse=True)
     return rows
@@ -375,12 +403,11 @@ def _safe_extract_backup(archive_path: str, destination: str) -> str:
     return payload
 
 
-def _replace_tree(source: str, target: str) -> None:
-    if os.path.isdir(target) and not os.path.islink(target):
-        shutil.rmtree(target)
-    elif os.path.lexists(target):
-        os.unlink(target)
-    shutil.copytree(source, target)
+def _remove_path(path: str) -> None:
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        os.unlink(path)
 
 
 def restore_encrypted_backup(
@@ -396,7 +423,10 @@ def restore_encrypted_backup(
     The current state is snapshotted before any replacement. Application files
     are restored into the persistent config directory and become the next image
     build source; the running process is restarted by the HTTP layer so restored
-    state is loaded cleanly.
+    state is loaded cleanly. Restored JSON state is validated before the live
+    config directory is touched, and each top-level artifact is swapped in with
+    an atomic os.replace from a staging directory, rolling back from the
+    snapshot if any swap fails.
     """
     if len(str(password or "")) < 8:
         raise ValueError("Backup password must be at least 8 characters")
@@ -422,41 +452,93 @@ def restore_encrypted_backup(
         manifest = json.loads(Path(os.path.join(payload, "manifest.json")).read_text(encoding="utf-8"))
         state_dir = os.path.join(payload, "state")
         app_dir = os.path.join(payload, "app")
+
+        # Validate the restored JSON state BEFORE touching the live config dir:
+        # a truncated or corrupted database must abort the restore, not
+        # half-replace the running panel.
+        for name in ("p00rija_db.json", "p00rija_config.json"):
+            try:
+                json.loads(Path(os.path.join(state_dir, name)).read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Restored {name} is not valid JSON; restore aborted: {exc}") from exc
+
         rollback_dir = os.path.join(
             config_dir,
             "backups",
             "pre-restore-" + time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(2).hex(),
         )
         os.makedirs(rollback_dir, exist_ok=True)
-        for name in (
-            "p00rija_db.json", "p00rija_config.json", "panel_secret",
-            "ssh_credentials.enc", ".run_mode", ".network_mode", ".publish_ranges",
-        ):
-            current = os.path.join(config_dir, name)
-            if os.path.isfile(current):
-                _copy_file(current, os.path.join(rollback_dir, name))
-        for name in ("certs", "acme_webroot"):
-            current = os.path.join(config_dir, name)
-            if os.path.isdir(current):
-                shutil.copytree(current, os.path.join(rollback_dir, name), dirs_exist_ok=True)
 
-        restored = []
-        for name in os.listdir(state_dir):
-            source = os.path.join(state_dir, name)
-            target = os.path.join(config_dir, name)
-            if os.path.isdir(source):
-                _replace_tree(source, target)
-            elif os.path.isfile(source):
-                _copy_file(source, target)
-            restored.append(name)
-        if os.path.isdir(app_dir):
-            for name in os.listdir(app_dir):
-                source = os.path.join(app_dir, name)
-                target = os.path.join(config_dir, name)
+        # Stage every restored artifact as a sibling of the config dir (same
+        # filesystem) so each top-level item can be swapped in atomically.
+        staging_dir = os.path.abspath(config_dir) + ".restore-staging"
+        _remove_path(staging_dir)
+        os.makedirs(staging_dir)
+        artifact_names: list[str] = []
+        state_names: set[str] = set()
+        for source_root, is_state in ((state_dir, True), (app_dir, False)):
+            if not os.path.isdir(source_root):
+                continue
+            for name in os.listdir(source_root):
+                if name in artifact_names:
+                    continue
+                source = os.path.join(source_root, name)
+                staged = os.path.join(staging_dir, name)
                 if os.path.isdir(source):
-                    _replace_tree(source, target)
+                    shutil.copytree(source, staged)
                 elif os.path.isfile(source):
-                    _copy_file(source, target)
+                    _copy_file(source, staged)
+                else:
+                    continue
+                artifact_names.append(name)
+                if is_state:
+                    state_names.add(name)
+
+        restored: list[str] = []
+        moved_dirs: list[str] = []
+        copied_files: list[str] = []
+        try:
+            for name in artifact_names:
+                staged = os.path.join(staging_dir, name)
+                target = os.path.join(config_dir, name)
+                if os.path.isdir(staged):
+                    if os.path.isdir(target) and not os.path.islink(target):
+                        os.replace(target, os.path.join(rollback_dir, name))
+                        moved_dirs.append(name)
+                    else:
+                        _remove_path(target)
+                    os.replace(staged, target)
+                else:
+                    if os.path.isfile(target) and not os.path.islink(target):
+                        _copy_file(target, os.path.join(rollback_dir, name))
+                        copied_files.append(name)
+                    else:
+                        _remove_path(target)
+                    os.replace(staged, target)
+                restored.append(name)
+        except Exception:
+            # Swap phase failed: put every original back from the rollback
+            # snapshot before surfacing the error.
+            for name in reversed(moved_dirs):
+                rollback_source = os.path.join(rollback_dir, name)
+                target = os.path.join(config_dir, name)
+                try:
+                    _remove_path(target)
+                    if os.path.isdir(rollback_source) and not os.path.islink(rollback_source):
+                        os.replace(rollback_source, target)
+                except OSError:
+                    pass
+            for name in reversed(copied_files):
+                rollback_source = os.path.join(rollback_dir, name)
+                try:
+                    if os.path.isfile(rollback_source):
+                        _copy_file(rollback_source, os.path.join(config_dir, name))
+                except OSError:
+                    pass
+            raise
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        restored = [name for name in restored if name in state_names]
 
         if normalized_url:
             parsed = urlparse(normalized_url)

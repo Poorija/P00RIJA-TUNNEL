@@ -1,0 +1,16 @@
+# Local state / scan artifacts
+.mimosa/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Download caches and generated archives
+engines/archives/
+cache/
+debug/
+*.log
+
+# Legacy release artifacts (kept out of the repository)
+P00RIJA_TUNNEL_V.1.9.99_COMPLETE.tar.gz
+P00RIJA-TUNNEL_V.1.9.99.tar
+p00rija-offline-bundle.tar.gz

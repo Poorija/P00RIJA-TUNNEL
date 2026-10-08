@@ -53,6 +53,7 @@ API_ROUTE_GROUPS: dict[str, dict[str, Any]] = {
                 "/api/nodes/ssh/start",
                 "/api/nodes/ssh/write",
                 "/api/nodes/ssh/read",
+                "/api/nodes/ssh/resize",
                 "/api/nodes/ssh/close",
                 "/api/nodes/ssh/run",
                 "/api/nodes/update",
@@ -86,7 +87,7 @@ API_ROUTE_GROUPS: dict[str, dict[str, Any]] = {
     "profiles_engines": {
         "description": "Tunnel profiles, engine health, engine process control, and binary upload.",
         "routes": {
-            "GET": ["/api/engines/health", "/api/engines/check-updates"],
+            "GET": ["/api/engines/health", "/api/engines/check-updates", "/api/engines/update-all/status"],
             "POST": [
                 "/api/profiles",
                 "/api/profiles/import",
@@ -95,11 +96,12 @@ API_ROUTE_GROUPS: dict[str, dict[str, Any]] = {
                 "/api/engines/upload",
                 "/api/engine/update",
                 "/api/engines/check-updates",
+                "/api/engines/update-all",
             ],
         },
     },
     "runtime_system": {
-        "description": "Runtime sessions, process/resource monitor, optimization, settings, certificates, and audits.",
+        "description": "Runtime sessions, process/resource monitor, optimization, settings, certificates, audits, and smart mirror selection.",
         "routes": {
             "GET": [
                 "/api/runtime/processes",
@@ -109,6 +111,9 @@ API_ROUTE_GROUPS: dict[str, dict[str, Any]] = {
                 "/api/system/audit",
                 "/api/system/routes",
                 "/api/speedtest/status",
+                "/api/mirrors/status",
+                "/api/mirrors/probe",
+                "/api/protocols/advise",
             ],
             "POST": [
                 "/api/runtime/optimize",
@@ -121,6 +126,7 @@ API_ROUTE_GROUPS: dict[str, dict[str, Any]] = {
                 "/api/settings/panel-path",
                 "/api/speedtest/start",
                 "/api/speedtest/install",
+                "/api/mirrors/apply",
             ],
             "DELETE": ["/api/runtime/sessions", "/api/runtime/processes"],
         },
@@ -259,28 +265,44 @@ def refresh_dashboard_nodes(
     ensure_tunnel_profiles: Callable[[], tuple[dict[str, Any], bool]],
     refresh_node_ping_async: Callable[[str, dict[str, Any]], Any],
     save_db: Callable[[], Any],
+    update_db: Callable[[Callable[[dict[str, Any]], None]], Any] | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     tunnel_profiles, profiles_changed = ensure_tunnel_profiles()
-    structure_changed = False
-    for index, (node_id, node) in enumerate(db_data.get("nodes", {}).items()):
-        if "display_order" not in node:
-            node["display_order"] = index
-            structure_changed = True
-        if not node.get("category"):
-            node["category"] = "Panel" if node.get("is_panel_node") else str(node.get("role") or "Nodes").title()
-            structure_changed = True
-        tags = list(node.get("tags") or [])
-        for tag in (str(node.get("role") or ""), "node"):
-            if tag and tag not in tags:
-                tags.append(tag)
-                structure_changed = True
-        node["tags"] = tags[:8]
+
+    def _needs_normalization(nodes: dict[str, Any]) -> bool:
+        for node in nodes.values():
+            if "display_order" not in node or not node.get("category"):
+                return True
+            tags = list(node.get("tags") or [])
+            if any(tag and tag not in tags for tag in (str(node.get("role") or ""), "node")):
+                return True
+        return False
+
+    def _normalize_nodes(data: dict[str, Any]) -> None:
+        for index, node in enumerate(data.get("nodes", {}).values()):
+            if "display_order" not in node:
+                node["display_order"] = index
+            if not node.get("category"):
+                node["category"] = "Panel" if node.get("is_panel_node") else str(node.get("role") or "Nodes").title()
+            tags = list(node.get("tags") or [])
+            for tag in (str(node.get("role") or ""), "node"):
+                if tag and tag not in tags:
+                    tags.append(tag)
+            node["tags"] = tags[:8]
+
+    if _needs_normalization(db_data.get("nodes", {})):
+        if update_db is not None:
+            update_db(_normalize_nodes)
+        else:
+            _normalize_nodes(db_data)
+            save_db()
+    for node_id, node in db_data.get("nodes", {}).items():
         if node.get("status") == "online" and now - node.get("last_seen", 0) > 30:
             node["status"] = "offline"
         if not node.get("paused") and node.get("ip"):
             refresh_node_ping_async(node_id, node)
-    if profiles_changed or structure_changed:
+    if profiles_changed:
         save_db()
     return tunnel_profiles
 
@@ -302,6 +324,7 @@ def build_dashboard_status(
     ensure_tunnel_profiles: Callable[[], tuple[dict[str, Any], bool]],
     refresh_node_ping_async: Callable[[str, dict[str, Any]], Any],
     save_db: Callable[[], Any],
+    update_db: Callable[[Callable[[dict[str, Any]], None]], Any] | None = None,
 ) -> dict[str, Any]:
     settings = db_data.get("settings", {})
     tunnel_profiles = refresh_dashboard_nodes(
@@ -309,6 +332,7 @@ def build_dashboard_status(
         ensure_tunnel_profiles=ensure_tunnel_profiles,
         refresh_node_ping_async=refresh_node_ping_async,
         save_db=save_db,
+        update_db=update_db,
     )
     links_changed = False
     for index, link in enumerate(db_data.get("links", {}).values()):
@@ -413,6 +437,7 @@ def dispatch_dashboard_get(
     ensure_tunnel_profiles: Callable[[], tuple[dict[str, Any], bool]],
     refresh_node_ping_async: Callable[[str, dict[str, Any]], Any],
     save_db: Callable[[], Any],
+    update_db: Callable[[Callable[[dict[str, Any]], None]], Any] | None = None,
 ) -> tuple[bool, Any, int, dict[str, str]]:
     if path == "/api/status":
         return True, build_dashboard_status(
@@ -431,6 +456,7 @@ def dispatch_dashboard_get(
             ensure_tunnel_profiles=ensure_tunnel_profiles,
             refresh_node_ping_async=refresh_node_ping_async,
             save_db=save_db,
+            update_db=update_db,
         ), 200, {}
     if path == "/api/logs":
         return True, db_data.get("logs", []), 200, {}
@@ -479,6 +505,9 @@ def test_node_connectivity(db_data: dict[str, Any], node_id: str, *, save_db: Ca
     ip = node.get("ip")
     if not ip:
         return {"error": "No IP assigned to node"}, 400
+    ip = str(ip)
+    if not re.fullmatch(r"[A-Za-z0-9.:-]+", ip) or ip.startswith("-"):
+        return {"error": "Invalid node IP"}, 400
     try:
         cmd1 = ["ping", "-c", "3", "-W", "2", ip]
         res1 = subprocess.run(cmd1, capture_output=True, text=True, timeout=8)
@@ -527,6 +556,8 @@ def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
         value = int(value)
     except Exception:
         return default
+    if value == 0:
+        return default
     return max(minimum, min(maximum, value))
 
 
@@ -541,6 +572,7 @@ def dispatch_node_ssh_request(
     prune_ssh_sessions: Callable[[], Any],
     start_ssh_session: Callable[[str, dict[str, Any]], tuple[str, str, bool, dict[str, Any]]],
     write_ssh_session: Callable[[str, str], Any],
+    resize_ssh_session: Callable[[str, Any, Any], dict[str, Any]],
     read_ssh_session_output: Callable[..., tuple[str, bool]],
     cleanup_ssh_session: Callable[[str], Any],
     execute_ssh_command: Callable[[dict[str, Any], str], dict[str, Any]],
@@ -557,6 +589,7 @@ def dispatch_node_ssh_request(
                 "port": _clamp_int(body.get("port", 22), 22, 1, 65535),
                 "username": str(body.get("username") or "root")[:80],
                 "auth_method": body.get("auth_method", "password") if body.get("auth_method") in ("password", "key") else "password",
+                "shell": body.get("shell", "fish") if body.get("shell") in ("fish", "bash", "zsh", "sh", "default") else "fish",
                 "password": str(body.get("password") or "")[:1000],
                 "private_key": str(body.get("private_key") or "")[:20000],
                 "timeout": _clamp_int(body.get("timeout", 15), 15, 3, 120),
@@ -589,6 +622,13 @@ def dispatch_node_ssh_request(
         except Exception as exc:
             return True, {"error": f"SSH terminal write failed: {exc}"}, 400
 
+    if path == "/api/nodes/ssh/resize":
+        try:
+            size = resize_ssh_session(body.get("session_id"), body.get("rows", 28), body.get("cols", 120))
+            return True, {"success": True, **size}, 200
+        except Exception as exc:
+            return True, {"error": f"SSH terminal resize failed: {exc}"}, 400
+
     if path == "/api/nodes/ssh/read":
         try:
             output, alive = read_ssh_session_output(body.get("session_id"))
@@ -611,7 +651,7 @@ def dispatch_node_ssh_request(
             vault = load_ssh_vault()
             saved = vault.get("nodes", {}).get(node_id, {})
             cred = dict(saved)
-            for key in ("host", "port", "username", "auth_method", "password", "private_key", "timeout"):
+            for key in ("host", "port", "username", "auth_method", "password", "private_key", "timeout", "shell"):
                 if body.get(key) not in (None, ""):
                     cred[key] = body.get(key)
             if not cred.get("host"):

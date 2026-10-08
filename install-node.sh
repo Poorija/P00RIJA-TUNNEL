@@ -5,7 +5,7 @@ CONFIG_DIR="/opt/p00rija/node"
 BIN="/usr/local/bin/Pooriya-tunnel"
 CONTROL_BIN="/usr/local/bin/p00rija"
 CONTAINER="p00rija-node"
-VERSION="1.9.95"
+VERSION="1.9.99"
 IMAGE="p00rija-tunnel:${VERSION}"
 P00RIJA_INTERNAL_PUBLISH_RANGES="${P00RIJA_DOCKER_PUBLISH_RANGES:-7000-7039:7000-7039,17000-17039:17000-17039}"
 P00RIJA_EXTERNAL_PUBLISH_RANGES="${P00RIJA_DOCKER_PUBLISH_RANGES:-}"
@@ -24,13 +24,21 @@ P00RIJA_WEBSOCKET_MASK_CLIENT="${P00RIJA_WEBSOCKET_MASK_CLIENT:-0}"
 P00RIJA_KEEP_BRIDGE_NETWORK="${P00RIJA_KEEP_BRIDGE_NETWORK:-0}"
 P00RIJA_NODE_NETWORK_MODE="${P00RIJA_NODE_NETWORK_MODE:-}"
 
+# P00RIJA_SOURCE_REF pins every GitHub fetch to an exact source revision: a tag
+# (v1.9.99), a commit SHA, or a branch name. Default "main" tracks the tip of
+# development; operators who need reproducible installs can export a fixed ref.
+# It only affects the default URLs; explicit P00RIJA_REPO_RAW still overrides.
+P00RIJA_SOURCE_REF="${P00RIJA_SOURCE_REF:-main}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$SCRIPT_DIR/installer-ui.sh" ]]; then
   # shellcheck disable=SC1091
   source "$SCRIPT_DIR/installer-ui.sh"
 else
-  HELPER_URL="${P00RIJA_REPO_RAW:-https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main}/installer-ui.sh"
-  HELPER_TMP="/tmp/p00rija-installer-ui.sh"
+  HELPER_URL="${P00RIJA_REPO_RAW:-https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/${P00RIJA_SOURCE_REF}}/installer-ui.sh"
+  HELPER_TMP="$(mktemp -t p00rija-installer-ui.XXXXXX)"
+  chmod 600 "$HELPER_TMP"
+  trap 'rm -f "$HELPER_TMP"' EXIT
   if curl -fsSL "$HELPER_URL" -o "$HELPER_TMP"; then
     # shellcheck disable=SC1090
     source "$HELPER_TMP"
@@ -181,24 +189,26 @@ ensure_docker() {
   if have docker; then
     systemctl enable docker >/dev/null 2>&1 || true
     systemctl start docker >/dev/null 2>&1 || true
-    configure_docker_mirror "$region"
     return 0
   fi
   if [[ "$region" == "ir" ]]; then
     install_docker_pkg
   else
     ui_info "Docker is missing. Trying official Docker installer first..."
-    if curl -fsSL https://get.docker.com -o /tmp/get-docker.sh; then
-      sh /tmp/get-docker.sh
-      rm -f /tmp/get-docker.sh
+    # Download to a root-only mktemp file, make it executable, then run it.
+    # Never pipe curl straight into sh: the download must be inspectable and atomic.
+    local get_docker_tmp
+    get_docker_tmp="$(mktemp)"
+    if curl -fsSL https://get.docker.com -o "$get_docker_tmp" && chmod 700 "$get_docker_tmp" && "$get_docker_tmp"; then
+      rm -f "$get_docker_tmp"
     else
+      rm -f "$get_docker_tmp"
       ui_warn "Official Docker installer failed. Falling back to package manager."
       install_docker_pkg
     fi
   fi
   systemctl enable docker >/dev/null 2>&1 || true
   systemctl start docker >/dev/null 2>&1 || true
-  configure_docker_mirror "$region"
 }
 
 configure_docker_node_runtime() {
@@ -260,10 +270,17 @@ build_image() {
 FROM python:3.11-slim
 ARG P00RIJA_REGION=global
 ENV PYTHONUNBUFFERED=1
+# Install ca-certificates first so HTTPS Iranian mirrors can be verified.
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+# Switch to Iranian Debian mirrors for Iran-built images (Arvancloud first, IranServer fallback).
 RUN if [ "$P00RIJA_REGION" = "ir" ]; then \
-      sed -i 's|http://deb.debian.org/debian-security|https://mirror.iranserver.com/debian-security|g; s|http://deb.debian.org/debian|https://mirror.iranserver.com/debian|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
-    fi && \
-    apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends openssl iputils-ping iperf3 curl procps openssh-client sshpass ca-certificates iproute2 wireguard-tools stunnel4 && rm -rf /var/lib/apt/lists/*
+      sed -i 's|http://deb.debian.org/debian-security|https://mirror.arvancloud.ir/debian-security|g; s|http://deb.debian.org/debian|https://mirror.arvancloud.ir/debian|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
+    fi
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends openssl iputils-ping iperf3 curl procps openssh-client sshpass ca-certificates iproute2 wireguard-tools stunnel4 && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY P00RIJA.py /app/P00RIJA.py
 COPY download_engines.py /app/download_engines.py
@@ -271,6 +288,9 @@ COPY p00rija_core/ /app/p00rija_core/
 COPY fonts/ /app/fonts/
 COPY install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py README.md README_FA.md LICENSE Dockerfile /app/
 COPY engines/ /usr/local/bin/
+# The panel's default web port constant is 8080; the container reads its actual
+# port from p00rija_config.json. Non-panel (node) containers have nothing to probe.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python3 -c "import json,socket; c=json.load(open('/opt/p00rija/p00rija_config.json')); p=int(c.get('port',8080)); socket.create_connection(('127.0.0.1',p),5) if c.get('role')=='panel' else None"
 CMD ["python3", "/app/P00RIJA.py"]
 EOF
   docker build --build-arg "P00RIJA_REGION=$region" -t "$IMAGE" -f "$CONFIG_DIR/Dockerfile" "$CONFIG_DIR"
@@ -283,6 +303,7 @@ main() {
   prepare_installer_ui region
   install_base_deps
   ensure_docker "$region"
+  configure_docker_mirror "$region"
   configure_docker_node_runtime
   enable_bbr
 
@@ -302,9 +323,21 @@ main() {
   ui_input node_private_key "Node private key" "Node private key from the panel, optional:" ""
 
   build_image "$region"
-  python3 - "$role" "${panel_url%/}" "$node_token" "$node_private_key" "$CONFIG_DIR/p00rija_config.json" <<'PY'
-import json, sys
-json.dump({"role": sys.argv[1], "panel_url": sys.argv[2], "token": sys.argv[3], "private_key": sys.argv[4]}, open(sys.argv[5], "w"), indent=2)
+  # The node token and private key are passed through environment variables (never
+  # argv) so they cannot leak through process listings while python3 writes the config.
+  P00RIJA_NODE_TOKEN="$node_token" P00RIJA_NODE_PRIVATE_KEY="$node_private_key" \
+    python3 - "$role" "${panel_url%/}" "$CONFIG_DIR/p00rija_config.json" <<'PY'
+import json, os, sys
+json.dump(
+    {
+        "role": sys.argv[1],
+        "panel_url": sys.argv[2],
+        "token": os.environ["P00RIJA_NODE_TOKEN"],
+        "private_key": os.environ.get("P00RIJA_NODE_PRIVATE_KEY", ""),
+    },
+    open(sys.argv[3], "w"),
+    indent=2,
+)
 PY
   chmod 0600 "$CONFIG_DIR/p00rija_config.json"
   echo "docker" > "$CONFIG_DIR/.run_mode"
@@ -342,7 +375,7 @@ run_node_container() {
     -e "P00RIJA_COPY_BUFFER_BYTES=$P00RIJA_COPY_BUFFER_BYTES" \
     -e "P00RIJA_WEBSOCKET_MASK_CLIENT=$P00RIJA_WEBSOCKET_MASK_CLIENT" \
     --add-host "host.docker.internal:host-gateway" \
-    "${publish_args[@]}" \
+    ${publish_args[@]+"${publish_args[@]}"} \
     -v "$CONFIG_DIR:/opt/p00rija" \
     "$IMAGE"
 }
@@ -359,6 +392,7 @@ update_existing_node() {
   declare -F configure_package_mirrors >/dev/null 2>&1 && configure_package_mirrors "$region"
   install_base_deps
   ensure_docker "$region"
+  configure_docker_mirror "$region"
   configure_docker_node_runtime
   enable_bbr
   backup_existing_state

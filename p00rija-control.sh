@@ -16,7 +16,7 @@ MANAGER_PATH="/usr/local/bin/Pooriya-tunnel"
 INSTALL_WORKDIR="${P00RIJA_INSTALL_WORKDIR:-/opt/p00rija-install}"
 REPO_TARBALL_URL="${P00RIJA_REPO_TARBALL_URL:-https://github.com/Poorija/P00RIJA-TUNNEL/archive/refs/heads/main.tar.gz}"
 REPO_RAW_PY_URL="${P00RIJA_REPO_RAW_PY_URL:-https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main/P00RIJA.py}"
-IMAGE_TAGS=("p00rija-tunnel:1.9.95" "p00rija-tunnel:latest")
+IMAGE_TAGS=("p00rija-tunnel:1.9.99" "p00rija-tunnel:latest")
 
 need_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -76,7 +76,7 @@ target_exists() {
   service=$(target_service "$target")
   [[ -f "$dir/p00rija_config.json" ]] && return 0
   have docker && docker ps -a --format '{{.Names}}' | grep -qx "$container" && return 0
-  systemctl list-unit-files "$service" >/dev/null 2>&1 && return 0
+  systemctl cat "$service" >/dev/null 2>&1 && return 0
   return 1
 }
 
@@ -98,28 +98,45 @@ container_status() {
 
 service_status() {
   local service="$1"
-  if systemctl list-unit-files "$service" >/dev/null 2>&1; then
+  if systemctl cat "$service" >/dev/null 2>&1; then
     systemctl is-active --quiet "$service" && echo "running" || echo "stopped"
   else
-    echo "missing"
+    # If there is no systemd unit, but the target runs as a Docker container, report that
+    # clearly instead of the confusing "missing" (which implies the install is broken).
+    echo "n/a"
   fi
 }
 
 extract_json_value() {
   local path="$1" expr="$2" default="${3:-}"
   [[ -f "$path" ]] || { echo "$default"; return; }
-  python3 - "$path" "$expr" "$default" <<'PY'
+  # Read JSON content, falling back to sudo for root-owned config files (0600) so non-root
+  # operators can still see status. Use a temp file to pass the content to python (NOT stdin,
+  # which collides with the heredoc, and NOT an env var, which overflows on large DBs).
+  local content=""
+  content=$(cat "$path" 2>/dev/null) || content=$(sudo cat "$path" 2>/dev/null) || { echo "$default"; return; }
+  local tmp_json
+  tmp_json=$(mktemp) || { echo "$default"; return; }
+  printf '%s' "$content" > "$tmp_json"
+  python3 - "$tmp_json" "$expr" "$default" <<'PY'
 import json, sys
-path, expr, default = sys.argv[1:4]
+tmp_path, expr, default = sys.argv[1:4]
 try:
-    data = json.load(open(path))
+    with open(tmp_path) as f:
+        data = json.load(f)
     value = data
     for part in expr.split("."):
         value = value.get(part, {}) if isinstance(value, dict) else {}
-    print(value if value not in ({}, None, "") else default)
+    if isinstance(value, bool):
+        print("true" if value else "false")
+    elif value not in ({}, None, ""):
+        print(value)
+    else:
+        print(default)
 except Exception:
     print(default)
 PY
+  rm -f "$tmp_json"
 }
 
 show_one_status() {
@@ -129,10 +146,17 @@ show_one_status() {
   printf '%-7s role=%-9s docker=%-8s systemd=%-8s dir=%s\n' \
     "$target" "$role" "$(container_status "$(target_container "$target")")" "$(service_status "$(target_service "$target")")" "$dir"
   if [[ "$target" == "panel" ]]; then
-    local host port
+    local host port tls hidden url_path
     host=$(extract_json_value "$dir/p00rija_db.json" settings.panel_host localhost)
     port=$(extract_json_value "$dir/p00rija_db.json" settings.port "")
-    [[ -n "$port" ]] && url="https://${host}:${port}" && printf '        panel-url=%s\n' "$url"
+    tls=$(extract_json_value "$dir/p00rija_db.json" settings.panel_tls false)
+    # Include the hidden panel path (if enabled) so the printed URL is directly clickable.
+    hidden=$(extract_json_value "$dir/p00rija_db.json" settings.hidden_panel_path_enabled false)
+    url_path=""
+    if [[ "$hidden" == "true" ]]; then
+      url_path=$(extract_json_value "$dir/p00rija_db.json" settings.hidden_panel_path "")
+    fi
+    [[ -n "$port" ]] && url="$([[ "$tls" == "false" ]] && echo http || echo https)://${host}:${port}${url_path}" && printf '        panel-url=%s\n' "$url"
   fi
 }
 
@@ -149,7 +173,7 @@ start_target() {
   container=$(target_container "$target")
   service=$(target_service "$target")
   if have docker && docker ps -a --format '{{.Names}}' | grep -qx "$container"; then docker start "$container"
-  elif systemctl list-unit-files "$service" >/dev/null 2>&1; then systemctl start "$service"
+  elif systemctl cat "$service" >/dev/null 2>&1; then systemctl start "$service"
   else echo "[!] $target is not installed." >&2; return 1; fi
 }
 
@@ -164,7 +188,7 @@ restart_target() {
   container=$(target_container "$target")
   service=$(target_service "$target")
   if have docker && docker ps -a --format '{{.Names}}' | grep -qx "$container"; then docker restart "$container"
-  elif systemctl list-unit-files "$service" >/dev/null 2>&1; then systemctl restart "$service"
+  elif systemctl cat "$service" >/dev/null 2>&1; then systemctl restart "$service"
   else echo "[!] $target is not installed." >&2; return 1; fi
 }
 
@@ -173,7 +197,7 @@ logs_target() {
   container=$(target_container "$target")
   service=$(target_service "$target")
   if have docker && docker ps -a --format '{{.Names}}' | grep -qx "$container"; then docker logs -f "$container"
-  elif systemctl list-unit-files "$service" >/dev/null 2>&1; then journalctl -u "$service" -n 100 -f
+  elif systemctl cat "$service" >/dev/null 2>&1; then journalctl -u "$service" -n 100 -f
   else echo "[!] $target is not installed." >&2; return 1; fi
 }
 
@@ -186,18 +210,27 @@ reset_panel_admin() {
   while [[ -z "${password:-}" ]]; do read -r -s -p "New admin password: " password; echo; done
   read -r -s -p "Repeat new admin password: " password2; echo
   [[ "$password" == "$password2" ]] || { echo "[!] Passwords do not match." >&2; return 1; }
-  python3 - "$db" "$username" "$password" <<'PY'
-import hashlib, json, os, sys, tempfile
-path, username, password = sys.argv[1:4]
+  P00RIJA_RESET_USER="$username" P00RIJA_RESET_DB="$db" P00RIJA_RESET_PWD="$password" python3 <<'PY'
+import hashlib, json, os, secrets, tempfile
+password = os.environ.get("P00RIJA_RESET_PWD", "")
+path = os.environ["P00RIJA_RESET_DB"]
+username = os.environ["P00RIJA_RESET_USER"]
 data = json.load(open(path))
 data.setdefault("admin", {})["username"] = username
-data["admin"]["password_hash"] = hashlib.sha256(password.encode()).hexdigest()
+iterations = 200_000
+salt = secrets.token_bytes(16)
+digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+data["admin"]["password_hash"] = f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
 fd, tmp = tempfile.mkstemp(prefix=".p00rija-db-", dir=os.path.dirname(path))
 with os.fdopen(fd, "w") as f:
     json.dump(data, f, indent=4, ensure_ascii=False)
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
+os.environ.pop("P00RIJA_RESET_PWD", None)
+os.environ.pop("P00RIJA_RESET_USER", None)
+os.environ.pop("P00RIJA_RESET_DB", None)
 PY
+  unset P00RIJA_RESET_USER P00RIJA_RESET_DB P00RIJA_RESET_PWD 2>/dev/null || true
   restart_target panel >/dev/null 2>&1 || true
   echo "[+] Admin credentials reset. Settings, nodes, tunnels, and certificates were kept."
 }
@@ -209,6 +242,15 @@ remove_target_runtime() {
   systemctl stop "$service" >/dev/null 2>&1 || true
   systemctl disable "$service" >/dev/null 2>&1 || true
   rm -f "/etc/systemd/system/$service"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+remove_host_agent() {
+  # The privileged host agent and the panel-side internal node container belong to
+  # the panel install but are not tracked by target_dir/target_container above.
+  systemctl stop p00rija-host-agent.service >/dev/null 2>&1 || true
+  systemctl disable p00rija-host-agent.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/p00rija-host-agent.service
   systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
@@ -347,6 +389,8 @@ run_for_found_targets() {
 uninstall_all_keep_data() {
   local target
   for target in panel node legacy; do remove_target_runtime "$target"; done
+  remove_host_agent
+  have docker && docker rm -f p00rija-panel-node >/dev/null 2>&1 || true
   remove_images
   echo "[+] Removed P00RIJA runtimes and images. Data under $APP_ROOT was kept."
 }

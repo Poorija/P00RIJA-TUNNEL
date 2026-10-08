@@ -1,20 +1,34 @@
-"""GitHub release and installed-version checks for tunnel engines."""
+"""GitHub release and installed-version checks for tunnel engines.
+
+Rate-limit resilient: results are cached in memory and on disk, GitHub API
+calls are serialized through one shared opener with spacing, HTTP 403/429 are
+converted into structured ``rate_limited`` results instead of exceptions, and
+an optional ``GITHUB_TOKEN`` environment variable raises the quota. ETags from
+previous checks are replayed for conditional revalidation.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import Any, Callable
 
 
 GITHUB_API = "https://api.github.com"
 USER_AGENT = "P00RIJA-TUNNEL-engine-update-checker"
-_CACHE: dict[str, Any] = {"created_at": 0.0, "result": {}}
+DEFAULT_CACHE_SECONDS = 6 * 3600.0  # 6h TTL for check results
+DISK_CACHE_FILENAME = "engine_update_cache.json"
+REQUEST_SPACING_SECONDS = 0.4  # minimum delay between GitHub API calls
+RATE_LIMIT_FALLBACK_RETRY_AFTER = 900.0  # used when GitHub sends no reset header
+RATE_LIMIT_RETRY_CAP = 600.0  # bounded sleep inside update_all_engines
+
+_CACHE: dict[str, Any] = {"created_at": 0.0, "result": {}, "etags": {}}
 _CACHE_LOCK = threading.Lock()
 
 RELEASE_SOURCES: dict[str, dict[str, Any]] = {
@@ -32,6 +46,8 @@ RELEASE_SOURCES: dict[str, dict[str, Any]] = {
     "brook": {"repo": "txthinking/brook"},
     "mieru": {"repo": "enfein/mieru"},
     "amneziawg": {"repo": "amnezia-vpn/amneziawg-tools"},
+    "hedioum": {"repo": "hedioum/Hedioum-Pool-Tunnel"},
+    "cloak": {"repo": "cbeuw/Cloak"},
     "tuic": {
         "repo": "tuic-protocol/tuic",
         "release_prefixes": ("tuic-server-", "tuic-client-"),
@@ -42,23 +58,132 @@ SYSTEM_SOURCES: dict[str, dict[str, str]] = {
     "wireguard": {"repo": "WireGuard/wireguard-tools", "manager": "apt"},
     "ssh": {"repo": "openssh/openssh-portable", "manager": "apt"},
     "stunnel": {"repo": "mtrojnar/stunnel", "manager": "apt"},
+    "phormal": {"repo": "Schmi7zz/Phormal", "manager": "raw-script", "source_type": "source_repository"},
 }
 
 BUILTIN_ENGINES = {"muxquantum", "rawsock", "aead"}
 
+# Serialize every GitHub API call through one shared opener with spacing so
+# repeated update checks cannot burn the hourly anonymous quota.
+_OPENER_LOCK = threading.Lock()
+_SHARED_OPENER = urllib.request.build_opener()
+_LAST_REQUEST_AT = {"monotonic": 0.0}
 
-def _request_json(url: str, timeout: float) -> tuple[Any, dict[str, str]]:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": USER_AGENT,
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        headers = {key.lower(): value for key, value in response.headers.items()}
-        return json.loads(response.read().decode("utf-8")), headers
+
+def _disk_cache_path() -> str:
+    db_path = os.environ.get("P00RIJA_DB_PATH", "")
+    if db_path:
+        return os.path.join(os.path.dirname(os.path.abspath(db_path)), DISK_CACHE_FILENAME)
+    config_dir = os.environ.get("P00RIJA_CONFIG_DIR", "/opt/p00rija")
+    return os.path.join(config_dir, DISK_CACHE_FILENAME)
+
+
+def _read_disk_cache() -> dict[str, Any]:
+    try:
+        with open(_disk_cache_path(), encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict) and isinstance(data.get("result"), dict):
+            data.setdefault("etags", {})
+            return data
+    except Exception:
+        pass
+    return {"created_at": 0.0, "result": {}, "etags": {}}
+
+
+def _write_disk_cache(payload: dict[str, Any], etags: dict[str, str]) -> None:
+    try:
+        path = _disk_cache_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"created_at": payload.get("checked_at") or time.time(), "result": payload, "etags": etags},
+                handle,
+            )
+        os.replace(tmp_path, path)
+    except Exception:
+        pass
+
+
+def clear_engine_update_cache() -> None:
+    with _CACHE_LOCK:
+        _CACHE["created_at"] = 0.0
+        _CACHE["result"] = {}
+        _CACHE["etags"] = {}
+    try:
+        path = _disk_cache_path()
+        if os.path.exists(path):
+            os.unlink(path)
+    except Exception:
+        pass
+
+
+class _RateLimited(Exception):
+    """Raised when GitHub answers 403/429 with (or without) a reset header."""
+
+    def __init__(self, retry_after: float, remaining: str = "", message: str = ""):
+        super().__init__(message or "GitHub API rate limit exceeded")
+        self.retry_after = max(0.0, float(retry_after))
+        self.remaining = remaining
+
+
+def _github_headers(etag: str = "") -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": USER_AGENT,
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if etag:
+        headers["If-None-Match"] = etag
+    return headers
+
+
+def _request_json(url: str, timeout: float, etag: str = "") -> tuple[Any, dict[str, str]]:
+    """GET <url> through the shared serialized opener.
+
+    Returns (data, headers); data is None when the server answered 304 Not
+    Modified (ETag revalidation). Raises _RateLimited on 403/429.
+    """
+    request = urllib.request.Request(url, headers=_github_headers(etag))
+    with _OPENER_LOCK:
+        wait = REQUEST_SPACING_SECONDS - (time.monotonic() - _LAST_REQUEST_AT["monotonic"])
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_REQUEST_AT["monotonic"] = time.monotonic()
+        try:
+            with _SHARED_OPENER.open(request, timeout=timeout) as response:
+                headers = {key.lower(): value for key, value in response.headers.items()}
+                return json.loads(response.read().decode("utf-8")), headers
+        except urllib.error.HTTPError as exc:
+            if exc.code == 304:
+                headers = {key.lower(): value for key, value in (exc.headers or {}).items()}
+                return None, headers
+            if exc.code in (403, 429):
+                remaining = ""
+                retry_after = RATE_LIMIT_FALLBACK_RETRY_AFTER
+                try:
+                    response_headers = {key.lower(): value for key, value in (exc.headers or {}).items()}
+                    remaining = str(response_headers.get("x-ratelimit-remaining", ""))
+                    reset_value = response_headers.get("x-ratelimit-reset", "")
+                    if reset_value:
+                        retry_after = max(0.0, float(reset_value) - time.time())
+                except Exception:
+                    pass
+                body_snippet = ""
+                try:
+                    body_snippet = (exc.read().decode("utf-8", "ignore") or "")[:200]
+                except Exception:
+                    pass
+                raise _RateLimited(
+                    retry_after,
+                    remaining,
+                    body_snippet or f"HTTP {exc.code} from GitHub API",
+                ) from exc
+            raise
 
 
 def _version_key(value: str) -> tuple[tuple[int, Any], ...]:
@@ -75,16 +200,58 @@ def _is_newer(latest: str, installed: str) -> bool:
     return _version_key(latest) > _version_key(installed)
 
 
+def _update_available_from_latest(latest: str, installed: str) -> bool:
+    """Recompute update availability from a joined latest tag ("a + b")."""
+    latest_tags = [tag.strip() for tag in str(latest or "").split("+") if tag.strip()]
+    if not latest_tags:
+        return False
+    installed_parts = [part.strip() for part in str(installed or "").split("+")]
+    return len(installed_parts) != len(latest_tags) or any(
+        _is_newer(tag, installed_parts[index] if index < len(installed_parts) else "")
+        for index, tag in enumerate(latest_tags)
+    )
+
+
+def _etag_store_key(repo: str, path: str) -> str:
+    return f"{repo}:{path}"
+
+
 def _check_release_engine(
     engine_id: str,
     source: dict[str, Any],
     installed: str,
     timeout: float,
+    *,
+    previous: dict[str, Any] | None = None,
+    etags: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     repo = source["repo"]
     started = time.monotonic()
+    etags = etags if etags is not None else {}
+    previous = previous or {}
     if source.get("release_prefixes"):
-        releases, headers = _request_json(f"{GITHUB_API}/repos/{repo}/releases?per_page=30", timeout)
+        list_path = f"/repos/{repo}/releases?per_page=30"
+        url = f"{GITHUB_API}{list_path}"
+        releases, headers = _request_json(url, timeout, etag=etags.get(_etag_store_key(repo, list_path), ""))
+        etags[_etag_store_key(repo, list_path)] = str(headers.get("etag", "") or "")
+        if releases is None:
+            # 304 Not Modified: reuse the cached tags, recompute against the
+            # currently installed version.
+            latest = str(previous.get("latest_version") or "")
+            return {
+                "engine": engine_id,
+                "source_type": "github_release",
+                "repo": repo,
+                "reachable": True,
+                "installed_version": installed or "",
+                "latest_version": latest,
+                "update_available": _update_available_from_latest(latest, installed),
+                "up_to_date": bool(installed) and not _update_available_from_latest(latest, installed),
+                "latency_ms": 0,
+                "rate_limit_remaining": headers.get("x-ratelimit-remaining", previous.get("rate_limit_remaining", "")),
+                "not_modified": True,
+                "error": "",
+            }
         tags = []
         for prefix in source["release_prefixes"]:
             release = next(
@@ -99,15 +266,18 @@ def _check_release_engine(
                 raise RuntimeError(f"No GitHub release found for {prefix}")
             tags.append(str(release.get("tag_name") or ""))
         latest = " + ".join(tags)
-        installed_parts = [part.strip() for part in str(installed or "").split("+")]
-        update_available = len(installed_parts) != len(tags) or any(
-            _is_newer(tag, installed_parts[index] if index < len(installed_parts) else "")
-            for index, tag in enumerate(tags)
-        )
+        update_available = _update_available_from_latest(latest, installed)
     else:
-        release, headers = _request_json(f"{GITHUB_API}/repos/{repo}/releases/latest", timeout)
-        latest = str(release.get("tag_name") or "")
-        update_available = _is_newer(latest, installed)
+        latest_path = f"/repos/{repo}/releases/latest"
+        url = f"{GITHUB_API}{latest_path}"
+        release, headers = _request_json(url, timeout, etag=etags.get(_etag_store_key(repo, latest_path), ""))
+        etags[_etag_store_key(repo, latest_path)] = str(headers.get("etag", "") or "")
+        if release is None:
+            latest = str(previous.get("latest_version") or "")
+            update_available = _update_available_from_latest(latest, installed)
+        else:
+            latest = str(release.get("tag_name") or "")
+            update_available = _is_newer(latest, installed)
     return {
         "engine": engine_id,
         "source_type": "github_release",
@@ -123,13 +293,25 @@ def _check_release_engine(
     }
 
 
-def _check_repository(engine_id: str, source: dict[str, str], installed: str, timeout: float) -> dict[str, Any]:
+def _check_repository(
+    engine_id: str,
+    source: dict[str, str],
+    installed: str,
+    timeout: float,
+    *,
+    etags: dict[str, str] | None = None,
+) -> dict[str, Any]:
     started = time.monotonic()
     repo = source["repo"]
-    _, headers = _request_json(f"{GITHUB_API}/repos/{repo}", timeout)
+    etags = etags if etags is not None else {}
+    repo_path = f"/repos/{repo}"
+    _, headers = _request_json(
+        f"{GITHUB_API}{repo_path}", timeout, etag=etags.get(_etag_store_key(repo, repo_path), "")
+    )
+    etags[_etag_store_key(repo, repo_path)] = str(headers.get("etag", "") or "")
     return {
         "engine": engine_id,
-        "source_type": "system_package",
+        "source_type": source.get("source_type") or "system_package",
         "package_manager": source.get("manager", ""),
         "repo": repo,
         "reachable": True,
@@ -149,9 +331,15 @@ def check_engine_updates(
     *,
     engine_id: str = "",
     timeout: float = 12.0,
-    cache_seconds: float = 300.0,
+    cache_seconds: float = DEFAULT_CACHE_SECONDS,
 ) -> dict[str, Any]:
-    """Check GitHub reachability and compare installed release tags."""
+    """Check GitHub reachability and compare installed release tags.
+
+    Results are cached in memory and on disk for ``cache_seconds``. Rate-limited
+    responses come back as ``{"success": True, "rate_limited": True,
+    "retry_after": <seconds>, ...}`` instead of raising, so the panel UI can
+    show a friendly message rather than a 500.
+    """
     now = time.time()
     if not engine_id:
         with _CACHE_LOCK:
@@ -159,6 +347,15 @@ def check_engine_updates(
                 cached = dict(_CACHE["result"])
                 cached["cached"] = True
                 return cached
+        disk = _read_disk_cache()
+        if disk.get("result") and now - float(disk.get("created_at") or 0.0) < cache_seconds:
+            with _CACHE_LOCK:
+                _CACHE["created_at"] = float(disk.get("created_at") or 0.0)
+                _CACHE["result"] = disk["result"]
+                _CACHE["etags"] = disk.get("etags") or {}
+            cached = dict(disk["result"])
+            cached["cached"] = True
+            return cached
 
     selected = [engine_id] if engine_id else sorted(catalog)
     unknown = [item for item in selected if item not in catalog]
@@ -167,14 +364,34 @@ def check_engine_updates(
 
     installed_manifest = manifest.get("engines", {}) if isinstance(manifest, dict) else {}
     results: dict[str, dict[str, Any]] = {}
+    # Replay ETags and previous results from the last known check (memory or
+    # disk) so an expired cache revalidates cheaply via 304 responses.
+    run_etags: dict[str, str] = {}
+    with _CACHE_LOCK:
+        previous_engines = dict((_CACHE["result"].get("engines") or {}))
+        run_etags.update({key: value for key, value in (_CACHE.get("etags") or {}).items()})
+    if not previous_engines or not run_etags:
+        disk_previous = _read_disk_cache()
+        if not previous_engines:
+            previous_engines = dict((disk_previous.get("result") or {}).get("engines") or {})
+        if not run_etags:
+            run_etags.update(disk_previous.get("etags") or {})
+    previous_final = previous_engines
 
     def worker(item: str) -> tuple[str, dict[str, Any]]:
         installed = str((installed_manifest.get(item) or {}).get("tag") or "")
         try:
             if item in RELEASE_SOURCES:
-                return item, _check_release_engine(item, RELEASE_SOURCES[item], installed, timeout)
+                return item, _check_release_engine(
+                    item,
+                    RELEASE_SOURCES[item],
+                    installed,
+                    timeout,
+                    previous=previous_final.get(item) or {},
+                    etags=run_etags,
+                )
             if item in SYSTEM_SOURCES:
-                return item, _check_repository(item, SYSTEM_SOURCES[item], installed, timeout)
+                return item, _check_repository(item, SYSTEM_SOURCES[item], installed, timeout, etags=run_etags)
             if item in BUILTIN_ENGINES:
                 return item, {
                     "engine": item,
@@ -200,6 +417,22 @@ def check_engine_updates(
                 "latency_ms": 0,
                 "error": "No update source is configured.",
             }
+        except _RateLimited as exc:
+            return item, {
+                "engine": item,
+                "source_type": "github_release" if item in RELEASE_SOURCES else "system_package",
+                "repo": str((RELEASE_SOURCES.get(item) or SYSTEM_SOURCES.get(item) or {}).get("repo") or ""),
+                "reachable": False,
+                "rate_limited": True,
+                "retry_after": round(exc.retry_after),
+                "installed_version": installed,
+                "latest_version": "",
+                "update_available": None,
+                "up_to_date": None,
+                "latency_ms": 0,
+                "rate_limit_remaining": exc.remaining,
+                "error": "GitHub API rate limit exceeded",
+            }
         except (urllib.error.URLError, TimeoutError, OSError, RuntimeError, ValueError) as exc:
             return item, {
                 "engine": item,
@@ -220,10 +453,20 @@ def check_engine_updates(
             key, value = future.result()
             results[key] = value
 
+    rate_limited_results = [item for item in results.values() if item.get("rate_limited")]
+    retry_after = max((int(item.get("retry_after") or 0) for item in rate_limited_results), default=0)
+    remaining_values = [
+        str(item.get("rate_limit_remaining"))
+        for item in results.values()
+        if str(item.get("rate_limit_remaining") or "").strip().isdigit()
+    ]
     payload = {
         "success": True,
         "checked_at": now,
         "cached": False,
+        "rate_limited": bool(rate_limited_results),
+        "retry_after": retry_after,
+        "rate_limit_remaining": min(int(value) for value in remaining_values) if remaining_values else "",
         "summary": {
             "total": len(results),
             "reachable": sum(1 for item in results.values() if item.get("reachable")),
@@ -231,11 +474,98 @@ def check_engine_updates(
             "current": sum(1 for item in results.values() if item.get("up_to_date") is True),
             "system_managed": sum(1 for item in results.values() if item.get("source_type") == "system_package"),
             "failed": sum(1 for item in results.values() if not item.get("reachable")),
+            "rate_limited": len(rate_limited_results),
         },
         "engines": dict(sorted(results.items())),
     }
-    if not engine_id:
+    if not engine_id and not rate_limited_results:
         with _CACHE_LOCK:
             _CACHE["created_at"] = now
             _CACHE["result"] = payload
+            _CACHE["etags"] = run_etags
+        _write_disk_cache(payload, run_etags)
     return payload
+
+
+def update_all_engines(
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    check_updates: Callable[[str], dict[str, Any]] | None = None,
+    updater: Callable[[str], Any] | None = None,
+) -> dict[str, Any]:
+    """Sequentially update every engine that has an available update.
+
+    ``check_updates("")`` must return the ``check_engine_updates`` payload for
+    all engines and ``updater(engine_id)`` updates one engine (the panel wires
+    these to its own wrappers, e.g. ``install_engine_from_github``). GitHub
+    rate-limit waits are respected with a bounded backoff between engines.
+    """
+    if check_updates is None or updater is None:
+        raise ValueError(
+            "update_all_engines requires check_updates and updater callables from the panel runtime"
+        )
+
+    def report(update: dict[str, Any]) -> None:
+        if progress_cb:
+            try:
+                progress_cb(update)
+            except Exception:
+                pass
+
+    report({"phase": "checking"})
+    results = check_updates("") or {}
+    if not results.get("success"):
+        raise RuntimeError(str(results.get("error") or "Engine update check failed"))
+    if results.get("rate_limited"):
+        retry_after = min(float(results.get("retry_after") or 0), RATE_LIMIT_RETRY_CAP)
+        report({"phase": "rate_limited", "rate_limited": True, "retry_after": retry_after})
+        if retry_after > 0:
+            time.sleep(retry_after)
+        results = check_updates("") or {}
+
+    engines = results.get("engines") or {}
+    targets = [
+        engine_id
+        for engine_id, info in sorted(engines.items())
+        if info.get("update_available") is True and info.get("source_type") == "github_release"
+    ]
+    report({"phase": "updating", "total": len(targets), "targets": targets})
+
+    updated: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for index, engine_id in enumerate(targets, 1):
+        report({"current_engine": engine_id, "completed": index - 1})
+        try:
+            outcome = updater(engine_id)
+            if isinstance(outcome, dict):
+                outcome.pop("output", None)
+                updated.append(outcome)
+            else:
+                updated.append({"engine": engine_id, "result": str(outcome)[:500]})
+        except Exception as exc:
+            message = str(exc)
+            retry_after = 0.0
+            if "rate limit" in message.lower():
+                # The single-engine updater surfaces GitHub rate limits as
+                # runtime errors; back off (bounded) before the next engine.
+                retry_after = RATE_LIMIT_RETRY_CAP
+                time.sleep(retry_after)
+            errors.append({"engine": engine_id, "error": message[-1000:], "retry_after": retry_after})
+        report({
+            "completed": index,
+            "results": list(updated),
+            "errors": list(errors),
+            "current_engine": "",
+        })
+
+    summary = {
+        "success": not errors,
+        "total": len(targets),
+        "updated": len(updated),
+        "failed": len(errors),
+        "targets": targets,
+        "results": updated,
+        "errors": errors,
+    }
+    report({"phase": "completed", **summary})
+    return summary

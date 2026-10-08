@@ -5,16 +5,22 @@ CONFIG_DIR="/opt/p00rija/panel"
 BIN="/usr/local/bin/Pooriya-tunnel"
 CONTROL_BIN="/usr/local/bin/p00rija"
 CONTAINER="p00rija-panel"
-VERSION="1.9.95"
+VERSION="1.9.99"
 IMAGE="p00rija-tunnel:${VERSION}"
-P00RIJA_DOCKER_IR_MIRRORS="${P00RIJA_DOCKER_IR_MIRRORS:-https://docker.iranserver.com}"
+# P00RIJA_SOURCE_REF pins every GitHub fetch to an exact source revision: a tag
+# (v1.9.99), a commit SHA, or a branch name. Default "main" tracks the tip of
+# development; operators who need reproducible installs can export a fixed ref.
+# It only affects the default URLs; explicit P00RIJA_REPO_RAW still overrides.
+P00RIJA_SOURCE_REF="${P00RIJA_SOURCE_REF:-main}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$SCRIPT_DIR/installer-ui.sh" ]]; then
   # shellcheck disable=SC1091
   source "$SCRIPT_DIR/installer-ui.sh"
 else
-  HELPER_URL="${P00RIJA_REPO_RAW:-https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main}/installer-ui.sh"
-  HELPER_TMP="/tmp/p00rija-installer-ui.sh"
+  HELPER_URL="${P00RIJA_REPO_RAW:-https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/${P00RIJA_SOURCE_REF}}/installer-ui.sh"
+  HELPER_TMP="$(mktemp -t p00rija-installer-ui.XXXXXX)"
+  chmod 600 "$HELPER_TMP"
+  trap 'rm -f "$HELPER_TMP"' EXIT
   if curl -fsSL "$HELPER_URL" -o "$HELPER_TMP"; then
     # shellcheck disable=SC1090
     source "$HELPER_TMP"
@@ -92,10 +98,37 @@ print(port, api_port)
 PY
 }
 
+# Only define local fallbacks when the shared library (installer-ui.sh) did not load.
+# This keeps mirror probing consistent: when installer-ui.sh is present, its probe-aware
+# configure_docker_mirror() and detect_server_region() are used; otherwise these stubs run.
+if ! declare -F detect_server_region >/dev/null 2>&1; then
+detect_server_region() {
+  if [[ "${P00RIJA_SERVER_REGION:-}" =~ ^(ir|IR)$ ]]; then echo "ir"; return 0; fi
+  if [[ "${P00RIJA_SERVER_REGION:-}" =~ ^(global|GLOBAL|outside|OUTSIDE)$ ]]; then echo "global"; return 0; fi
+  # Region detection is advisory only: HTTPS endpoints, short timeouts, and a logged
+  # default of "global" when detection is unavailable (interactive callers confirm
+  # the choice afterwards through the region prompt/menu).
+  local cc=""
+  cc=$(curl -fsSL --max-time 3 https://ip-api.com/line?fields=countryCode 2>/dev/null || true)
+  [[ -z "$cc" ]] && cc=$(curl -fsSL --max-time 3 https://ipinfo.io/country 2>/dev/null || true)
+  [[ -z "$cc" ]] && cc=$(curl -fsSL --max-time 3 https://ifconfig.co/country-iso 2>/dev/null || true)
+  cc="${cc//$'\r'/}"
+  cc="${cc//$'\n'/}"
+  if [[ -z "$cc" ]]; then
+    echo "[i] Region detection unavailable; defaulting to global repositories." >&2
+    echo "global"
+    return 0
+  fi
+  [[ "$cc" == "IR" ]] && echo "ir" || echo "global"
+}
+fi
+
+if ! declare -F configure_docker_mirror >/dev/null 2>&1; then
 configure_docker_mirror() {
   local region="$1"
+  local ir_mirrors="${P00RIJA_DOCKER_IR_MIRRORS:-https://registry.ir.svrs.tech https://mirror.kargadan.ir https://docker.arvancloud.ir https://docker.kernel.ir https://focker.ir https://registry.docker.ir https://docker.iranserver.com https://registry.liara.ir}"
   mkdir -p /etc/docker
-  python3 - "$region" "$P00RIJA_DOCKER_IR_MIRRORS" <<'PY'
+  python3 - "$region" "$ir_mirrors" <<'PY'
 import json, os, sys
 path = "/etc/docker/daemon.json"
 region, mirrors_text = sys.argv[1:3]
@@ -117,29 +150,8 @@ with open(tmp, "w") as f:
 os.replace(tmp, path)
 PY
   systemctl restart docker >/dev/null 2>&1 || true
-  if [[ "$region" == "ir" ]]; then
-    echo "[i] Docker registry mirror configured: ${P00RIJA_DOCKER_IR_MIRRORS}"
-    if [[ "${P00RIJA_SKIP_DOCKER_MIRROR_PROBE:-0}" != "1" ]] && have docker; then
-      if timeout 45 docker pull hello-world:latest >/dev/null 2>&1; then
-        echo "[+] Docker mirror probe succeeded."
-      else
-        echo "[!] Docker mirror probe failed. Keeping the mirror config, but image pulls may need network access to Docker Hub."
-      fi
-    fi
-  fi
 }
-
-detect_server_region() {
-  if [[ "${P00RIJA_SERVER_REGION:-}" =~ ^(ir|IR)$ ]]; then echo "ir"; return 0; fi
-  if [[ "${P00RIJA_SERVER_REGION:-}" =~ ^(global|GLOBAL|outside|OUTSIDE)$ ]]; then echo "global"; return 0; fi
-  local cc=""
-  cc=$(curl -fsSL --max-time 3 http://ip-api.com/line?fields=countryCode 2>/dev/null || true)
-  [[ -z "$cc" ]] && cc=$(curl -fsSL --max-time 3 https://ipinfo.io/country 2>/dev/null || true)
-  [[ -z "$cc" ]] && cc=$(curl -fsSL --max-time 3 https://ifconfig.co/country-iso 2>/dev/null || true)
-  cc="${cc//$'\r'/}"
-  cc="${cc//$'\n'/}"
-  [[ "$cc" == "IR" ]] && echo "ir" || echo "global"
-}
+fi
 
 install_docker_pkg() {
   if have apt-get; then
@@ -176,11 +188,15 @@ ensure_docker() {
   
   if [[ "$region" != "ir" ]]; then
     echo "[i] Installing official Docker using get.docker.com..."
-    if curl -fsSL https://get.docker.com -o /tmp/get-docker.sh; then
-      sh /tmp/get-docker.sh
-      rm -f /tmp/get-docker.sh
+    # Download to a root-only mktemp file, make it executable, then run it.
+    # Never pipe curl straight into sh: the download must be inspectable and atomic.
+    local get_docker_tmp
+    get_docker_tmp="$(mktemp)"
+    if curl -fsSL https://get.docker.com -o "$get_docker_tmp" && chmod 700 "$get_docker_tmp" && "$get_docker_tmp"; then
+      rm -f "$get_docker_tmp"
     else
-      echo "[!] Failed to download Docker install script, falling back to package manager."
+      rm -f "$get_docker_tmp"
+      echo "[!] Failed to download or run the Docker install script, falling back to package manager."
       install_docker_pkg
     fi
   else
@@ -223,7 +239,7 @@ build_image() {
   if [[ -f "$SCRIPT_DIR/P00RIJA.py" ]]; then
     install -m 0755 "$SCRIPT_DIR/P00RIJA.py" "$CONFIG_DIR/P00RIJA.py"
   else
-    curl -fsSL "https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main/P00RIJA.py" -o "$CONFIG_DIR/P00RIJA.py"
+    curl -fsSL "https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/${P00RIJA_SOURCE_REF}/P00RIJA.py" -o "$CONFIG_DIR/P00RIJA.py"
     chmod 0755 "$CONFIG_DIR/P00RIJA.py"
   fi
 
@@ -237,7 +253,7 @@ build_image() {
   if [[ -f "$SCRIPT_DIR/Pooriya-tunnel.sh" ]]; then
     install -m 0755 "$SCRIPT_DIR/Pooriya-tunnel.sh" "$BIN"
   else
-    curl -fsSL "https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main/Pooriya-tunnel.sh" -o "$BIN"
+    curl -fsSL "https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/${P00RIJA_SOURCE_REF}/Pooriya-tunnel.sh" -o "$BIN"
     chmod 0755 "$BIN"
   fi
   if [[ -f "$SCRIPT_DIR/p00rija-control.sh" ]]; then
@@ -274,10 +290,17 @@ build_image() {
 FROM python:3.11-slim
 ARG P00RIJA_REGION=global
 ENV PYTHONUNBUFFERED=1
+# Install ca-certificates first so HTTPS Iranian mirrors can be verified.
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+# Switch to Iranian Debian mirrors for Iran-built images (Arvancloud first, IranServer fallback).
 RUN if [ "$P00RIJA_REGION" = "ir" ]; then \
-      sed -i 's|http://deb.debian.org/debian-security|https://mirror.iranserver.com/debian-security|g; s|http://deb.debian.org/debian|https://mirror.iranserver.com/debian|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
-    fi && \
-    apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends openssl iputils-ping iperf3 curl procps openssh-client sshpass ca-certificates iproute2 wireguard-tools stunnel4 && rm -rf /var/lib/apt/lists/*
+      sed -i 's|http://deb.debian.org/debian-security|https://mirror.arvancloud.ir/debian-security|g; s|http://deb.debian.org/debian|https://mirror.arvancloud.ir/debian|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
+    fi
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends openssl iputils-ping iperf3 curl procps openssh-client sshpass ca-certificates iproute2 wireguard-tools stunnel4 && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY P00RIJA.py /app/P00RIJA.py
 COPY download_engines.py /app/download_engines.py
@@ -285,6 +308,9 @@ COPY p00rija_core/ /app/p00rija_core/
 COPY fonts/ /app/fonts/
 COPY install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py README.md README_FA.md LICENSE Dockerfile /app/
 COPY engines/ /usr/local/bin/
+# The panel's default web port constant is 8080; the container reads its actual
+# port from p00rija_config.json. Non-panel (node) containers have nothing to probe.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python3 -c "import json,socket; c=json.load(open('/opt/p00rija/p00rija_config.json')); p=int(c.get('port',8080)); socket.create_connection(('127.0.0.1',p),5) if c.get('role')=='panel' else None"
 CMD ["python3", "/app/P00RIJA.py"]
 EOF
   docker build --build-arg "P00RIJA_REGION=$region" -t "$IMAGE" -f "$CONFIG_DIR/Dockerfile" "$CONFIG_DIR"
@@ -297,7 +323,15 @@ install_host_agent() {
   }
   mkdir -p "$CONFIG_DIR/host_control/requests" "$CONFIG_DIR/host_control/results"
   chmod 0700 "$CONFIG_DIR/host_control" "$CONFIG_DIR/host_control/requests" "$CONFIG_DIR/host_control/results"
-  chmod 0700 "$CONFIG_DIR/p00rija-host-agent.py"
+  # Install the agent to a dedicated immutable location OUTSIDE the panel data
+  # directory: $CONFIG_DIR is volume-mounted into the panel container, so code
+  # there could be rewritten from inside the container. The agent runs as root,
+  # hence its code must live where the panel cannot replace it.
+  local agent_lib_dir="/usr/local/lib/p00rija"
+  local agent_lib_path="$agent_lib_dir/p00rija-host-agent.py"
+  mkdir -p "$agent_lib_dir"
+  rm -f "$agent_lib_path"
+  install -m 0555 "$CONFIG_DIR/p00rija-host-agent.py" "$agent_lib_path"
   if ! have certbot; then
     if have apt-get; then
       export DEBIAN_FRONTEND=noninteractive
@@ -320,7 +354,7 @@ Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 $CONFIG_DIR/p00rija-host-agent.py
+ExecStart=/usr/bin/python3 $agent_lib_path
 Restart=always
 RestartSec=2
 UMask=0077
@@ -347,7 +381,7 @@ run_panel_container() {
   fi
   docker run -d --name "$CONTAINER" --network bridge --restart unless-stopped \
     "${tun_args[@]}" \
-    "${publish_args[@]}" \
+    ${publish_args[@]+"${publish_args[@]}"} \
     -v "$CONFIG_DIR:/opt/p00rija" \
     "$IMAGE"
 }
@@ -544,7 +578,13 @@ main() {
   build_image "$region"
   install_host_agent
   
-  local pwd_hash; pwd_hash=$(python3 -c "import hashlib; print(hashlib.sha256(input().encode()).hexdigest())" <<< "$password")
+  local pwd_hash
+  if declare -F p00rija_hash_password >/dev/null 2>&1; then
+    pwd_hash=$(p00rija_hash_password "$password")
+  else
+    pwd_hash=$(P00RIJA_HASH_INPUT="$password" python3 -c 'import hashlib,os,secrets; p=os.environ.get("P00RIJA_HASH_INPUT",""); i=200000; s=secrets.token_bytes(16); d=hashlib.pbkdf2_hmac("sha256",p.encode(),s,i); print(f"pbkdf2_sha256${i}${s.hex()}${d.hex()}")')
+    unset P00RIJA_HASH_INPUT
+  fi
   
   mkdir -p "$CONFIG_DIR"
   python3 -c "

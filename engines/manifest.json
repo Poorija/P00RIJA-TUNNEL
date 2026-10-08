@@ -26,10 +26,10 @@
     },
     "chisel": {
       "repo": "jpillora/chisel",
-      "tag": "v1.11.5",
-      "asset": "chisel_1.11.5_linux_amd64.gz",
-      "url": "https://github.com/jpillora/chisel/releases/download/v1.11.5/chisel_1.11.5_linux_amd64.gz",
-      "sha256": "2506226c4710a3c8d3b332f83d0f3b412fe2a8436b710ea0dbec44b288ab309b",
+      "tag": "v1.11.7",
+      "asset": "chisel_1.11.7_linux_amd64.gz",
+      "url": "https://github.com/jpillora/chisel/releases/download/v1.11.7/chisel_1.11.7_linux_amd64.gz",
+      "sha256": "48be5a24ac2571e1aef16e1340c2d1eda2818a9f8d7974ace77e95d19b1b1fe6",
       "binaries": [
         "chisel"
       ],
@@ -63,10 +63,10 @@
     },
     "hysteria2": {
       "repo": "apernet/hysteria",
-      "tag": "app/v2.9.2",
+      "tag": "app/v2.9.3",
       "asset": "hysteria-linux-amd64",
-      "url": "https://github.com/apernet/hysteria/releases/download/app/v2.9.2/hysteria-linux-amd64",
-      "sha256": "86fef8e2f1b2bf41318ac96724eee6c3b449e4e510022cc89658b63a6713922a",
+      "url": "https://github.com/apernet/hysteria/releases/download/app/v2.9.3/hysteria-linux-amd64",
+      "sha256": "66dbdb0608f25f3057b433afe975a9fc1af2ca8e512479e294988b3ef363d6c1",
       "binaries": [
         "hysteria",
         "hysteria2"
@@ -97,10 +97,10 @@
     },
     "naiveproxy": {
       "repo": "klzgrad/naiveproxy",
-      "tag": "v149.0.7827.114-1",
-      "asset": "naiveproxy-v149.0.7827.114-1-linux-x64.tar.xz",
-      "url": "https://github.com/klzgrad/naiveproxy/releases/download/v149.0.7827.114-1/naiveproxy-v149.0.7827.114-1-linux-x64.tar.xz",
-      "sha256": "8b308e6b554127b5ebc5bb5c7a6ce77cb481aa8d67bc5843819704d23ae7773a",
+      "tag": "v150.0.7871.63-1",
+      "asset": "naiveproxy-v150.0.7871.63-1-linux-x64.tar.xz",
+      "url": "https://github.com/klzgrad/naiveproxy/releases/download/v150.0.7871.63-1/naiveproxy-v150.0.7871.63-1-linux-x64.tar.xz",
+      "sha256": "0c4f506ce66a7881892fd6932b542c53fc06ac2351987756096c61e753c687bf",
       "binaries": [
         "naive"
       ],
@@ -134,10 +134,10 @@
     },
     "singbox": {
       "repo": "SagerNet/sing-box",
-      "tag": "v1.13.13",
-      "asset": "sing-box-1.13.13-linux-amd64.tar.gz",
-      "url": "https://github.com/SagerNet/sing-box/releases/download/v1.13.13/sing-box-1.13.13-linux-amd64.tar.gz",
-      "sha256": "bb99cabf47694625db421ee17898f36cdc1f9c2cb5decf65b12bac8d8437e842",
+      "tag": "v1.13.14",
+      "asset": "sing-box-1.13.14-linux-amd64.tar.gz",
+      "url": "https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-amd64.tar.gz",
+      "sha256": "f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697",
       "binaries": [
         "sing-box"
       ],
@@ -212,8 +212,71 @@
           "binary": "tuic-client"
         }
       ]
+    },
+    "phormal": {
+      "repo": "Schmi7zz/Phormal",
+      "tag": "main",
+      "asset": "phormal",
+      "url": "https://raw.githubusercontent.com/Schmi7zz/Phormal/main/phormal.sh",
+      "sha256": "39feef3aa40f01ee1df01baf3cf46f624e70152215a4a7639163acae309ed273",
+      "binaries": [
+        "phormal"
+      ],
+      "raw_files": [
+        {
+          "asset": "phormal",
+          "url": "https://raw.githubusercontent.com/Schmi7zz/Phormal/main/phormal.sh",
+          "sha256": "8bde5217a9b57609778fcde5ddebbba9dc88a102817c25149b8db84de16621ab",
+          "binary": "phormal"
+        }
+      ]
+    },
+    "cloak": {
+      "repo": "cbeuw/Cloak",
+      "tag": "v2.12.0",
+      "asset": "ck-client-linux-amd64-v2.12.0",
+      "url": "https://github.com/cbeuw/Cloak/releases/download/v2.12.0/ck-client-linux-amd64-v2.12.0",
+      "sha256": "ceabde7e13cf0e9dd7f53f811d6f24c1246755911b06aa40fb541041016348e3",
+      "binaries": [
+        "ck-client",
+        "ck-server"
+      ],
+      "extra": [
+        {
+          "asset": "ck-server-linux-amd64-v2.12.0",
+          "sha256": "f2bea92c99195ac26cd5749e80d07339d5582c103f73934b414150c6070dae4e",
+          "binaries": [
+            "ck-server"
+          ]
+        }
+      ],
+      "source": null
+    },
+    "hedioum": {
+      "repo": "hedioum/Hedioum-Pool-Tunnel",
+      "tag": "v0.3.2",
+      "asset": "hedioum-tunnel",
+      "url": "https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/download/v0.3.2/hedioum-tunnel",
+      "sha256": "38062e2a7300bbfd518bdb213476b80eac8ae715209f6b3bc457cadf361b2dc4",
+      "binaries": [
+        "hedioum-tunnel",
+        "hedioum-tunnel-arm64"
+      ],
+      "extra": [
+        {
+          "asset": "hedioum-tunnel-arm64",
+          "sha256": "66047ef5834fdac3f4aec72c0561629f7a703092a2130398c1024b11c8b9790c",
+          "binaries": [
+            "hedioum-tunnel-arm64"
+          ]
+        }
+      ],
+      "source": null
     }
   },
   "failures": {},
-  "generated_at": "2026-06-19T20:42:10Z"
+  "generated_at": "2026-07-07T01:04:34Z",
+  "notes": {
+    "hedioum": "Supported as optional upstream download/profile because upstream repository does not declare a redistribution license."
+  }
 }

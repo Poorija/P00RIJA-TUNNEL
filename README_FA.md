@@ -2,10 +2,10 @@
 
 ![لوگوی P00RIJA TUNNEL](assets/p00rija-logo.svg)
 
-**نسخه:** 1.9.95  
+**نسخه:** 1.9.96  
 **لایسنس:** GPL v3  
 **توسعه‌دهنده:** [Poorija](https://github.com/Poorija)  
-**ایمیل:** p00rija@tutamail.com
+**ایمیل:** mohammadmahdi.farhadianfard@gmail.com
 
 [English](README.md)
 
@@ -15,7 +15,7 @@ P00RIJA TUNNEL یک پنل Docker-first برای مدیریت تانل معکو�
 
 پنل برای استفاده عملیاتی واقعی طراحی شده است: مدیریت certificate، ثبت نود، کنترل SSH، ساخت تانل، تست سرعت، مدیریت هسته‌ها، بکاپ و restore، مهاجرت هاست، مانیتورینگ، تنظیم معماری انتقال دیتا و مدیریت موبایل‌پسند همگی از داخل رابط وب انجام می‌شوند.
 
-ابزارهای انتقال و پروفایل شامل Reverse TCP کلاسیک، WebSocket/TLS، HTTP/2، HTTP/3/QUIC، REALITY، XHTTP، ShadowTLS، AnyTLS، MASQUE CONNECT-UDP، مسیرهای AmneziaWG/WireGuard، Multiplexing اشتراکی، Bonding تطبیقی و حالت Hybrid Mux/Bonding هستند. فعال بودن هر قابلیت به باینری‌های نصب‌شده و توانایی نودهای انتخابی وابسته است.
+ابزارهای انتقال و پروفایل شامل Reverse TCP کلاسیک، WebSocket/TLS، HTTP/2، HTTP/3/QUIC، REALITY، XHTTP، Xray HTTPUpgrade، مخفی‌سازی HTTPS با Cloak، ShadowTLS، AnyTLS، MASQUE CONNECT-UDP، مسیرهای AmneziaWG/WireGuard، Multiplexing اشتراکی، Bonding تطبیقی و حالت Hybrid Mux/Bonding هستند. فعال بودن هر قابلیت به باینری‌های نصب‌شده و توانایی نودهای انتخابی وابسته است.
 
 ## نصب آسان
 
@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main/install
 sudo bash install.sh
 ```
 
-این روش پیشنهاد اصلی است. اگر فقط `install.sh` موجود باشد، اسکریپت پیش از ادامه کل آرشیو branch `main` را از `https://github.com/Poorija/P00RIJA-TUNNEL` در `/opt/p00rija-install` دریافت می‌کند تا رابط گرافیکی ترمینال، فایل‌های Docker، فونت‌ها، باینری‌های آماده‌ی هسته‌ها و نصب‌کننده‌های پنل/نود در دسترس باشند. آدرس Raw و آرشیو مخزن در تاریخ ۲۴ ژوئن ۲۰۲۶ بررسی شدند.
+این روش پیشنهاد اصلی است. اگر فقط `install.sh` موجود باشد، اسکریپت پیش از ادامه کل آرشیو branch `main` را از `https://github.com/Poorija/P00RIJA-TUNNEL` در `/opt/p00rija-install` دریافت می‌کند تا رابط گرافیکی ترمینال، فایل‌های Docker، فونت‌ها، باینری‌های آماده‌ی هسته‌ها و نصب‌کننده‌های پنل/نود در دسترس باشند. آدرس Raw و آرشیو مخزن در تاریخ ۶ جولای ۲۰۲۶ دوباره بررسی شدند.
 
 نصب مستقیم پنل:
 
@@ -82,9 +82,9 @@ sudo bash install-node.sh
 
 - مدیریت نودهای داخلی، خارجی و خود سرور پنل به‌عنوان نود از یک بخش واحد.
 - وضعیت زنده نود، ping، ترافیک، فشار CPU/RAM، وضعیت Docker/runtime، snapshot منابع، tag، role و نشانگرهای اتصال.
-- اتصال SSH به نود انتخابی، ذخیره امن credentials، اجرای دستور و کنترل عملیاتی از داخل پنل.
+- اتصال SSH به نود انتخابی، ذخیره امن credentials، اجرای دستور و ترمینال interactive مبتنی بر PTY از داخل پنل. Fish در صورت وجود، شل پیش‌فرض ترمینال است و به bash/zsh/sh/default-shell fallback دارد؛ Tab، Backspace، جهت‌ها، میان‌برهای Ctrl/Alt، paste و resize ترمینال پشتیبانی می‌شوند.
 - بررسی سازگاری و نسخه نودها در وضعیت‌های به‌روز، قدیمی، اختلاف build، جلوتر از پنل و ناسازگار.
-- ترتیب نمایش زنده نودها، tagهای رنگی و ذخیره پایدار ترتیب بدون نیاز به Refresh.
+- ترتیب نمایش زنده نودها، tagهای رنگی، dropdown فشرده عملیات هر نود و ذخیره پایدار ترتیب بدون نیاز به Refresh. منوی عملیات باز در refreshهای خودکار پنل پایدار می‌ماند.
 
 ### مدیریت تانل و Port Forward
 
@@ -97,11 +97,13 @@ sudo bash install-node.sh
 
 ### پروفایل‌های انتقال و پوشش Engineها
 
-- engine داخلی reverse tunnel به‌همراه پروفایل‌ها و engineهای Reverse TCP، AmneziaWG v2، مسیرهای WireGuard-style، GOST، Backhaul، Rathole، Chisel، FRP، Xray، Hysteria2، sing-box، TUIC، NaiveProxy، ShadowTLS، Brook، Mieru، MASQUE و پروفایل‌های Mux/Quantum.
+- engine داخلی reverse tunnel به‌همراه پروفایل‌ها و engineهای Reverse TCP، AmneziaWG v2، مسیرهای WireGuard-style، GOST، Backhaul، Rathole، Chisel، FRP، Xray، Xray HTTPUpgrade + REALITY، Cloak HTTPS camouflage، Hysteria2، sing-box، TUIC، NaiveProxy، ShadowTLS، Brook، Mieru، MASQUE، Phormal، Hedioum Dynamic Pool و پروفایل‌های Mux/Quantum.
 - catalog پروفایل با امتیاز سرعت، امنیت و پایداری.
-- پشتیبانی از خانواده‌های REALITY gRPC/HTTP2، XHTTP + REALITY، AnyTLS، ShadowTLS، HTTP/2 TLS، HTTP/3/QUIC، MASQUE CONNECT-UDP، MASQUE QUIC-aware proxy، TUIC UDP-over-stream، TURN-like TLS relay و پیکربندی‌های سازگار با ECH در صورت پشتیبانی DNS/کلاینت/ارائه‌دهنده.
+- پشتیبانی از خانواده‌های REALITY gRPC/HTTP2، XHTTP + REALITY، Xray HTTPUpgrade + REALITY، Cloak HTTPS camouflage، AnyTLS، ShadowTLS، HTTP/2 TLS، HTTP/3/QUIC، MASQUE CONNECT-UDP، MASQUE QUIC-aware proxy، TUIC UDP-over-stream، TURN-like TLS relay و پیکربندی‌های سازگار با ECH در صورت پشتیبانی DNS/کلاینت/ارائه‌دهنده.
 - Engine Manager برای کشف باینری، تست سلامت، اصلاح permission اجرا، بررسی نسخه، نصب دستی آرشیو، توقف/شروع مجدد process و بررسی update موتور.
 - پوشه `engines/` و ابزار `download_engines.py` برای به‌روزرسانی یا بازسازی assetهای engine.
+- خانواده پروفایل‌های Phormal برای Bridge، Relay، Reverse، GRE، Echo و Raw/udp2raw-style با هشدار capability برای systemd، شبکه host، GRE/ICMP/raw socket و اجرای امن به‌صورت opt-in.
+- خانواده پروفایل‌های Hedioum برای dynamic connection pool با ظاهر SSH، نقش SOCKS5 hub و foreign egress، پیش‌فرض‌های محافظه‌کارانه pool، capهای jitterدار هر connection و بدون تغییر خودکار پورت OpenSSH.
 
 ### تست هوشمند و تست سرعت
 
@@ -139,6 +141,7 @@ sudo bash install-node.sh
 - رابط فارسی و انگلیسی، فونت پیش‌فرض Vazirmatn، چند تم، PWA و ممیزی ترجمه در مرورگر.
 - چیدمان واکنش‌گرا برای موبایل و تبلت؛ جدول نود و پورت به کارت خوانا تبدیل می‌شود، جدول‌های عریض اسکرول لمسی دارند، نمودارها با container هماهنگ می‌شوند و modalها به bottom sheet سازگار با safe area تبدیل می‌شوند.
 - کنترل‌های جهت‌مند برای جابه‌جایی نود، دسته تانل و تانل با آیکون‌های بالا/پایین مجزا و ذخیره زنده ترتیب جدید.
+- Dropdown فشرده عملیات، فشار عرضی جدول نودها را کم می‌کند و وضعیت DOM منوی باز را هنگام refresh زمان‌بندی‌شده داشبورد حفظ می‌کند.
 
 ## موتورهای تانلینگ و بسته آفلاین
 
@@ -196,10 +199,10 @@ sudo Pooriya-tunnel
 ```bash
 python3 -m py_compile P00RIJA.py download_engines.py p00rija_core/*.py
 bash -n install.sh install-panel.sh install-node.sh Pooriya-tunnel.sh
-docker build --platform linux/amd64 -t p00rija-tunnel:1.9.95 .
+docker build --platform linux/amd64 -t p00rija-tunnel:1.9.96 .
 ```
 
-برای انتشار کامل در GitHub از آرشیو ساخته‌شده با نام `P00RIJA-TUNNEL-GitHub-v1.9.95-*.tar.gz` استفاده کنید. این بسته cache، ابزارهای debug، آرشیوهای قدیمی و state زمان اجرا را حذف می‌کند، اما باینری‌های آماده‌ی `engines/` را نگه می‌دارد تا کاربری که repository/package را دانلود می‌کند یک درخت نصب کامل داشته باشد. در صورت نیاز، هسته‌ها بعداً با `python3 download_engines.py` قابل به‌روزرسانی هستند.
+برای انتشار کامل در GitHub از آرشیو ساخته‌شده با نام `P00RIJA-TUNNEL-GitHubPackage-v1.9.96-*.tar.gz` یا `.zip` استفاده کنید. این بسته cache، ابزارهای debug، آرشیوهای قدیمی و state زمان اجرا را حذف می‌کند، اما باینری‌های آماده‌ی `engines/` را نگه می‌دارد تا کاربری که repository/package را دانلود می‌کند یک درخت نصب کامل داشته باشد. در صورت نیاز، هسته‌ها بعداً با `python3 download_engines.py` قابل به‌روزرسانی هستند.
 
 ## لایسنس
 

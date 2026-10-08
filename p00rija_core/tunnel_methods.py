@@ -8,8 +8,11 @@ import base64
 import secrets
 import os
 import shlex
+import shutil
+import socket
+import subprocess
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 try:
     from .security import normalize_role
@@ -47,20 +50,52 @@ EXTRA_ENGINE_CATALOG = {
     "rawsock": {
         "bins": ["python3"],
         "repo": "builtin raw socket helper",
+    },
+    "phormal": {
+        "bins": ["phormal"],
+        "repo": "Schmi7zz/Phormal",
+        "license": "GPL-3.0",
+        "native_manager": True,
+        "requires_systemd": True,
+        "requires_host_network": True,
+        "notes": "Phormal is exposed as an opt-in native host manager. GRE/Echo/Raw modes require CAP_NET_ADMIN/CAP_NET_RAW and must not be auto-started inside restricted containers.",
+    },
+    "hedioum": {
+        "bins": ["hedioum-tunnel"],
+        "repo": "hedioum/Hedioum-Pool-Tunnel",
+        "native_manager": True,
+        "requires_systemd": True,
+        "redistribution": "upstream-license-not-declared; bundled only when operator supplies the binary",
+        "notes": "Dynamic SSH-mimic Yamux pool. P00RIJA uses conservative pool defaults and never moves OpenSSH ports automatically.",
+    },
+    "cloak": {
+        "bins": ["ck-client", "ck-server"],
+        "repo": "cbeuw/Cloak",
+        "license": "GPL-3.0",
+        "native_manager": True,
+        "requires_systemd": True,
+        "notes": "Cloak is an opt-in pluggable transport for HTTPS-looking camouflage. It is not a standalone proxy and should wrap an explicit upstream proxy/service.",
     }
 }
 
-EXTRA_TUNNEL_ENGINES = {"amneziawg", "wireguard", "ssh", "stunnel", "aead", "rawsock"}
+EXTRA_TUNNEL_ENGINES = {"amneziawg", "wireguard", "ssh", "stunnel", "aead", "rawsock", "phormal", "hedioum", "cloak"}
 EXTRA_TUNNEL_MODES = {
     "reverse_tcp", "amneziawg_v2", "wireguard_kernel",
     "ssh_socks5", "ssh_local_forward", "ssh_remote_forward", "ssh_jump",
     "stunnel_tls_wrap", "raw_socket", "aead_port_forward", "aead_socks5",
     "client_port_forward", "client_socks5",
+    "phormal_bridge", "phormal_relay", "phormal_reverse", "phormal_gre",
+    "phormal_echo", "phormal_raw", "hedioum_pool", "hedioum_egress",
+    "httpupgrade", "cloak_shadowsocks", "cloak_tcp_bridge",
 }
 EXTRA_TRANSPORTS = {
     "reverse_tcp", "amneziawg_udp", "wireguard_udp",
     "ssh_dynamic", "ssh_local", "ssh_remote", "ssh_jump",
     "stunnel_tls", "raw_ip", "aead_tcp", "port_forward", "socks5",
+    "phormal_sit", "phormal_relay_quic", "phormal_reverse_tcp",
+    "phormal_gre", "phormal_echo_icmp", "phormal_raw_udp2raw",
+    "ssh_mimic_yamux", "ssh_mimic_tcp", "httpupgrade",
+    "cloak_https", "cloak_mux",
 }
 
 EXTRA_TUNNEL_PROFILES = {
@@ -145,7 +180,7 @@ EXTRA_TUNNEL_PROFILES = {
         "sync_port": 7001,
         "ssh_user": "root",
         "ssh_port": 22,
-        "ssh_bind_host": "0.0.0.0",
+        "ssh_bind_host": "127.0.0.1",
         "ssh_identity_file": "/opt/p00rija/ssh/id_ed25519",
         "keepalive_interval": 20,
         "description": "OpenSSH dynamic SOCKS5 proxy using -D for client egress through the selected peer.",
@@ -163,7 +198,7 @@ EXTRA_TUNNEL_PROFILES = {
         "sync_port": 7001,
         "ssh_user": "root",
         "ssh_port": 22,
-        "ssh_bind_host": "0.0.0.0",
+        "ssh_bind_host": "127.0.0.1",
         "ssh_target_host": "127.0.0.1",
         "ssh_target_port": 443,
         "ssh_identity_file": "/opt/p00rija/ssh/id_ed25519",
@@ -183,7 +218,7 @@ EXTRA_TUNNEL_PROFILES = {
         "sync_port": 7001,
         "ssh_user": "root",
         "ssh_port": 22,
-        "ssh_bind_host": "0.0.0.0",
+        "ssh_bind_host": "127.0.0.1",
         "ssh_target_host": "127.0.0.1",
         "ssh_target_port": 443,
         "ssh_identity_file": "/opt/p00rija/ssh/id_ed25519",
@@ -315,6 +350,203 @@ EXTRA_TUNNEL_PROFILES = {
         "description": "Final client-side egress profile that exposes a SOCKS5 listener on a chosen port.",
         "ratings": {"speed": "normal", "security": "good", "stability": "normal"},
     },
+    "phormal_bridge_stable": {
+        "name": "Phormal Bridge Stable",
+        "engine": "phormal",
+        "tunnel_mode": "phormal_bridge",
+        "transport": "phormal_sit",
+        "network": "tcp_udp",
+        "tls_enabled": False,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "requires_capabilities": ["CAP_NET_ADMIN"],
+        "pool_size": 24,
+        "bridge_port": 7000,
+        "sync_port": 7001,
+        "keepalive_interval": 15,
+        "description": "Phormal point-to-point bridge profile for stable paths. Uses host networking and should be launched only on nodes where native tunnel privileges are explicitly allowed.",
+        "ratings": {"speed": "good", "security": "normal", "stability": "good"},
+    },
+    "phormal_relay_throughput": {
+        "name": "Phormal Relay Throughput",
+        "engine": "phormal",
+        "tunnel_mode": "phormal_relay",
+        "transport": "phormal_relay_quic",
+        "network": "tcp_udp",
+        "tls_enabled": True,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "pool_size": 32,
+        "bridge_port": 443,
+        "sync_port": 7001,
+        "padding_min": 8,
+        "padding_max": 96,
+        "jitter_ms": 8,
+        "keepalive_interval": 15,
+        "description": "Phormal Relay profile for open paths that need high throughput plus obfuscated relaying and port-hopping behavior.",
+        "ratings": {"speed": "good", "security": "good", "stability": "normal"},
+    },
+    "phormal_reverse_nat_safe": {
+        "name": "Phormal Reverse NAT Safe",
+        "engine": "phormal",
+        "tunnel_mode": "phormal_reverse",
+        "transport": "phormal_reverse_tcp",
+        "network": "tcp",
+        "tls_enabled": False,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "pool_size": 24,
+        "bridge_port": 7443,
+        "sync_port": 7001,
+        "description": "Phormal Reverse profile for environments where only outbound TCP from the private node survives.",
+        "ratings": {"speed": "normal", "security": "normal", "stability": "good"},
+    },
+    "phormal_gre_low_latency": {
+        "name": "Phormal GRE Low Latency",
+        "engine": "phormal",
+        "tunnel_mode": "phormal_gre",
+        "transport": "phormal_gre",
+        "network": "tcp_udp",
+        "tls_enabled": False,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "requires_capabilities": ["CAP_NET_ADMIN"],
+        "pool_size": 12,
+        "bridge_port": 7000,
+        "sync_port": 7001,
+        "description": "Phormal GRE/IPIP profile for low-overhead friendly paths. Requires explicit host tunnel privileges.",
+        "ratings": {"speed": "good", "security": "poor", "stability": "normal"},
+        "experimental": True,
+    },
+    "phormal_echo_restricted": {
+        "name": "Phormal Echo Restricted Path",
+        "engine": "phormal",
+        "tunnel_mode": "phormal_echo",
+        "transport": "phormal_echo_icmp",
+        "network": "tcp_udp",
+        "tls_enabled": False,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "requires_capabilities": ["CAP_NET_ADMIN", "CAP_NET_RAW"],
+        "pool_size": 8,
+        "bridge_port": 7000,
+        "sync_port": 7001,
+        "description": "Phormal Echo profile for very restricted paths. It may touch ICMP host behavior, so P00RIJA keeps it experimental and opt-in.",
+        "ratings": {"speed": "poor", "security": "normal", "stability": "normal"},
+        "experimental": True,
+    },
+    "phormal_raw_udp_hostile": {
+        "name": "Phormal Raw UDP-Hostile",
+        "engine": "phormal",
+        "tunnel_mode": "phormal_raw",
+        "transport": "phormal_raw_udp2raw",
+        "network": "tcp_udp",
+        "tls_enabled": False,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "requires_capabilities": ["CAP_NET_ADMIN", "CAP_NET_RAW"],
+        "pool_size": 10,
+        "bridge_port": 4096,
+        "sync_port": 7001,
+        "description": "Phormal Raw/udp2raw-style profile for UDP-hostile filtering. Requires raw socket capability and careful firewall scoping.",
+        "ratings": {"speed": "normal", "security": "normal", "stability": "normal"},
+        "experimental": True,
+    },
+    "hedioum_dynamic_pool_socks5": {
+        "name": "Hedioum Dynamic Pool SOCKS5 Hub",
+        "engine": "hedioum",
+        "tunnel_mode": "hedioum_pool",
+        "transport": "ssh_mimic_yamux",
+        "network": "tcp",
+        "tls_enabled": False,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "pool_size": 16,
+        "bridge_port": 40001,
+        "sync_port": 7001,
+        "hedioum_role": "iran",
+        "hedioum_min_connections": 3,
+        "hedioum_max_connections": 12,
+        "hedioum_bandwidth_limit_mbps": 8,
+        "hedioum_jitter_mbps": 2,
+        "hedioum_scale_down_idle_sec": 90,
+        "description": "Hedioum hub profile with a local SOCKS5 bridge and adaptive SSH-mimic Yamux pools. Defaults are intentionally conservative to avoid connection storms on busy nodes.",
+        "ratings": {"speed": "good", "security": "good", "stability": "good"},
+    },
+    "hedioum_foreign_egress": {
+        "name": "Hedioum Foreign Egress",
+        "engine": "hedioum",
+        "tunnel_mode": "hedioum_egress",
+        "transport": "ssh_mimic_tcp",
+        "network": "tcp",
+        "tls_enabled": False,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "pool_size": 16,
+        "bridge_port": 22,
+        "sync_port": 7001,
+        "hedioum_role": "foreign",
+        "hedioum_decoy_target": "127.0.0.1:2022",
+        "hedioum_move_ssh_port": False,
+        "description": "Hedioum foreign egress listener with SSH-mimic handshake and decoy forwarding. P00RIJA never changes the real SSH daemon port unless the operator does it manually.",
+        "ratings": {"speed": "good", "security": "good", "stability": "good"},
+    },
+    "xray_httpupgrade_reality": {
+        "name": "Xray VLESS HTTPUpgrade + REALITY",
+        "engine": "xray",
+        "tunnel_mode": "httpupgrade",
+        "transport": "httpupgrade",
+        "network": "tcp",
+        "tls_enabled": True,
+        "xray_protocol": "vless",
+        "xray_security": "reality",
+        "pool_size": 16,
+        "bridge_port": 443,
+        "sync_port": 7001,
+        "obfs_host": "www.microsoft.com",
+        "tls_sni": "www.microsoft.com",
+        "obfs_path": "/cdn-cgi/p00rija-upgrade",
+        "padding_min": 8,
+        "padding_max": 96,
+        "jitter_ms": 8,
+        "keepalive_interval": 18,
+        "description": "Xray HTTPUpgrade uses an HTTP/1.1 Upgrade style transport without WebSocket framing. It is useful behind TLS/reverse proxies and is lighter than classic WebSocket for compatible Xray clients.",
+        "ratings": {"speed": "good", "security": "good", "stability": "good"},
+    },
+    "cloak_https_camouflage": {
+        "name": "Cloak HTTPS Camouflage",
+        "engine": "cloak",
+        "tunnel_mode": "cloak_tcp_bridge",
+        "transport": "cloak_https",
+        "network": "tcp",
+        "tls_enabled": True,
+        "native_engine_enabled": True,
+        "host_native_required": True,
+        "requires_systemd": True,
+        "pool_size": 16,
+        "bridge_port": 443,
+        "sync_port": 7001,
+        "cloak_proxy_method": "shadowsocks",
+        "cloak_num_conn": 4,
+        "cloak_browser_sig": "chrome",
+        "obfs_host": "www.cloudflare.com",
+        "tls_sni": "www.cloudflare.com",
+        "obfs_path": "/",
+        "padding_min": 16,
+        "padding_max": 160,
+        "jitter_ms": 12,
+        "keepalive_interval": 20,
+        "description": "Opt-in Cloak pluggable transport profile for HTTPS-looking traffic camouflage. It should wrap an explicit upstream proxy/service and is intentionally bounded to avoid connection storms.",
+        "ratings": {"speed": "normal", "security": "good", "stability": "good"},
+    },
 }
 
 TUNNEL_OPTION_MATRIX_EXTRA = {
@@ -347,6 +579,40 @@ TUNNEL_OPTION_MATRIX_EXTRA = {
         "transports": [["raw_ip", "Raw IP Socket"]],
         "modes": [["raw_socket", "Raw Socket"]],
         "networks": [["tcp_udp", "TCP + UDP"]],
+    },
+    "phormal": {
+        "transports": [
+            ["phormal_sit", "Phormal Bridge / SIT"],
+            ["phormal_relay_quic", "Phormal Relay"],
+            ["phormal_reverse_tcp", "Phormal Reverse TCP"],
+            ["phormal_gre", "Phormal GRE"],
+            ["phormal_echo_icmp", "Phormal Echo / ICMP"],
+            ["phormal_raw_udp2raw", "Phormal Raw / udp2raw"],
+        ],
+        "modes": [
+            ["phormal_bridge", "Phormal Bridge"],
+            ["phormal_relay", "Phormal Relay"],
+            ["phormal_reverse", "Phormal Reverse"],
+            ["phormal_gre", "Phormal GRE"],
+            ["phormal_echo", "Phormal Echo"],
+            ["phormal_raw", "Phormal Raw"],
+        ],
+        "networks": [["tcp", "TCP"], ["udp", "UDP"], ["tcp_udp", "TCP + UDP"]],
+    },
+    "hedioum": {
+        "transports": [["ssh_mimic_yamux", "SSH-mimic Yamux Pool"], ["ssh_mimic_tcp", "SSH-mimic TCP Egress"]],
+        "modes": [["hedioum_pool", "Dynamic Pool Hub"], ["hedioum_egress", "Foreign Egress"]],
+        "networks": [["tcp", "TCP"]],
+    },
+    "xray": {
+        "transports": [["tcp", "TCP"], ["grpc", "gRPC TLS"], ["h2", "HTTP/2 TLS"], ["ws", "WebSocket"], ["wss", "WebSocket TLS"], ["httpupgrade", "HTTPUpgrade"]],
+        "modes": [["vless_reality", "Xray VLESS Reality"], ["reality_grpc", "REALITY gRPC"], ["reality_h2", "REALITY HTTP/2"], ["reality_ws", "REALITY WebSocket"], ["httpupgrade", "HTTPUpgrade + REALITY"]],
+        "networks": [["tcp", "TCP"]],
+    },
+    "cloak": {
+        "transports": [["cloak_https", "Cloak HTTPS Camouflage"], ["cloak_mux", "Cloak Multiplexed TCP"]],
+        "modes": [["cloak_tcp_bridge", "Cloak TCP Bridge"], ["cloak_shadowsocks", "Cloak Shadowsocks Plugin"]],
+        "networks": [["tcp", "TCP"]],
     }
 }
 
@@ -379,16 +645,171 @@ def amneziawg_obfuscation_from_link(link: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stable_awg_private(seed: str) -> str:
-    # This is a deterministic placeholder for preview/export. Real deployment
-    # should replace it with `awg genkey` output.
-    digest = hashlib.sha256(seed.encode("utf-8")).digest()
-    return base64.b64encode(digest).decode("ascii")
+def _engine_binary_candidates(binary: str) -> list[str]:
+    """Locations of a bundled engine binary, mirroring engine_binary_path."""
+    bases = [
+        os.path.join(os.getcwd(), "engines"),
+        "/app/engines",
+        "/usr/local/bin",
+        os.path.join(CONFIG_DIR, "engines"),
+    ]
+    candidates = [os.path.join(base, binary) for base in bases]
+    which = shutil.which(binary)
+    if which:
+        candidates.append(which)
+    return candidates
 
 
-def _stable_awg_public(seed: str) -> str:
-    digest = hashlib.sha256(("public:" + seed).encode("utf-8")).digest()
-    return base64.b64encode(digest).decode("ascii")
+def _run_engine_tool(binary: str, args: list[str], stdin_text: str | None = None) -> str:
+    for path in _engine_binary_candidates(binary):
+        if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+            continue
+        try:
+            proc = subprocess.run(
+                [path, *args],
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = (proc.stdout or "").strip()
+            if output:
+                return output
+        except Exception:
+            continue
+    return ""
+
+
+def _x25519_keypair_from_cryptography() -> tuple[str, str]:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    private_key = X25519PrivateKey.generate()
+    private_raw = private_key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_raw = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return base64.b64encode(private_raw).decode("ascii"), base64.b64encode(public_raw).decode("ascii")
+
+
+def _x25519_public_from_private_cryptography(private_key: str) -> str:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    private_raw = base64.b64decode(private_key.strip(), validate=True)
+    if len(private_raw) != 32:
+        raise ValueError("WireGuard private key must decode to 32 bytes")
+    public_raw = (
+        X25519PrivateKey.from_private_bytes(private_raw)
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    return base64.b64encode(public_raw).decode("ascii")
+
+
+def _wg_generate_keypair(tools: tuple[str, ...] = ("awg", "wg")) -> tuple[str, str]:
+    """Generate a real WireGuard/AmneziaWG key pair.
+
+    Prefers the bundled ``genkey``/``pubkey`` tools (awg first, wg fallback);
+    falls back to the Python ``cryptography`` x25519 implementation; raises a
+    clear error when neither is available.
+    """
+    for tool in tools:
+        private_key = _run_engine_tool(tool, ["genkey"])
+        if not private_key:
+            continue
+        public_key = _run_engine_tool(tool, ["pubkey"], stdin_text=private_key + "\n")
+        if public_key:
+            return private_key, public_key
+    try:
+        return _x25519_keypair_from_cryptography()
+    except Exception as exc:
+        raise RuntimeError(
+            "Unable to generate WireGuard/AmneziaWG keys: no bundled awg/wg binary "
+            f"and the 'cryptography' package is unavailable ({exc}). "
+            "Install the engines or `pip install cryptography`."
+        ) from exc
+
+
+def _wg_public_from_private(private_key: str, tools: tuple[str, ...] = ("awg", "wg")) -> str:
+    for tool in tools:
+        public_key = _run_engine_tool(tool, ["pubkey"], stdin_text=private_key.strip() + "\n")
+        if public_key:
+            return public_key
+    try:
+        return _x25519_public_from_private_cryptography(private_key)
+    except Exception:
+        return ""
+
+
+def _resolve_wg_keypair(
+    link: dict[str, Any],
+    private_field: str,
+    public_field: str,
+    tools: tuple[str, ...],
+    persist: Callable[[dict[str, Any]], None] | None,
+) -> tuple[str, str]:
+    """Return (private, public) for a WG/AWG side, generating and persisting once."""
+    private_key = str(link.get(private_field) or "").strip()
+    public_key = str(link.get(public_field) or "").strip()
+    if private_key and public_key:
+        return private_key, public_key
+    generated: dict[str, Any] = {}
+    if private_key and not public_key:
+        public_key = _wg_public_from_private(private_key, tools)
+        if not public_key:
+            raise RuntimeError(
+                "Unable to derive the WireGuard public key for this link: no bundled "
+                "awg/wg binary and the 'cryptography' package is unavailable. "
+                "Install the engines or `pip install cryptography`."
+            )
+        generated[public_field] = public_key
+    if not private_key:
+        private_key, public_key = _wg_generate_keypair(tools)
+        generated[private_field] = private_key
+        generated[public_field] = public_key
+    if generated and persist:
+        try:
+            persist(generated)
+        except Exception:
+            pass
+    return private_key, public_key
+
+
+def _persist_fields_once(
+    persist: Callable[[dict[str, Any]], None] | None,
+    fields: dict[str, Any],
+) -> None:
+    if persist and fields:
+        try:
+            persist(fields)
+        except Exception:
+            pass
+
+
+def _xray_x25519_keypair() -> tuple[str, str] | None:
+    """REALITY key pair from the bundled xray binary ('xray x25519'), or None."""
+    output = _run_engine_tool("xray", ["x25519"])
+    if not output:
+        return None
+    private_key = ""
+    public_key = ""
+    for line in output.splitlines():
+        if "Private key:" in line:
+            private_key = line.split("Private key:", 1)[1].strip()
+        elif "Public key:" in line:
+            public_key = line.split("Public key:", 1)[1].strip()
+    if private_key and public_key:
+        return private_key, public_key
+    return None
 
 
 def _normalize_ip_network(value: str, fallback: str) -> str:
@@ -398,16 +819,34 @@ def _normalize_ip_network(value: str, fallback: str) -> str:
         return fallback
 
 
-def amneziawg_config_for_link(link_id: str, link: dict[str, Any], role: str, peer_ip: str) -> dict[str, Any]:
+def _peer_host_route(address_cidr: str) -> str:
+    """Single-host route for a peer address: strip the prefix and use /32 (IPv4) or /128 (IPv6)."""
+    try:
+        interface = ipaddress.ip_interface(str(address_cidr))
+        return f"{interface.ip}/{interface.max_prefixlen}"
+    except Exception:
+        return str(address_cidr)
+
+
+def amneziawg_config_for_link(
+    link_id: str,
+    link: dict[str, Any],
+    role: str,
+    peer_ip: str,
+    persist: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     listen_port = int(link.get("bridge_port", 7000))
     mtu = int(link.get("awg_mtu", 1280))
     obfs = amneziawg_obfuscation_from_link(link)
-    server_private = link.get("awg_server_private_key") or _stable_awg_private(f"{link_id}:server")
-    client_private = link.get("awg_client_private_key") or _stable_awg_private(f"{link_id}:client")
-    server_public = link.get("awg_server_public_key") or _stable_awg_public(f"{link_id}:server")
-    client_public = link.get("awg_client_public_key") or _stable_awg_public(f"{link_id}:client")
+    server_private, server_public = _resolve_wg_keypair(
+        link, "awg_server_private_key", "awg_server_public_key", ("awg", "wg"), persist
+    )
+    client_private, client_public = _resolve_wg_keypair(
+        link, "awg_client_private_key", "awg_client_public_key", ("awg", "wg"), persist
+    )
     server_address = _normalize_ip_network(str(link.get("awg_address", "10.66.0.1/24")), "10.66.0.1/24")
     client_address = _normalize_ip_network(str(link.get("awg_client_address", "10.66.0.2/32")), "10.66.0.2/32")
+    client_allowed = _peer_host_route(client_address)
     interface_name = str(link.get("awg_interface", f"awg{str(link_id)[-4:]}")).replace("-", "")[:15] or "awg0"
 
     def render_interface(private_key: str, address: str, listen: bool) -> str:
@@ -430,7 +869,7 @@ def amneziawg_config_for_link(link_id: str, link: dict[str, Any], role: str, pee
             "",
             "[Peer]",
             f"PublicKey = {client_public}",
-            "AllowedIPs = 10.66.0.2/32",
+            f"AllowedIPs = {client_allowed}",
             "PersistentKeepalive = 25",
             "",
         ])
@@ -479,15 +918,24 @@ def amneziawg_config_for_link(link_id: str, link: dict[str, Any], role: str, pee
         "obfuscation": obfs,
     }
 
-def wireguard_config_for_link(link_id: str, link: dict[str, Any], role: str, peer_ip: str) -> dict[str, Any]:
+def wireguard_config_for_link(
+    link_id: str,
+    link: dict[str, Any],
+    role: str,
+    peer_ip: str,
+    persist: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     listen_port = int(link.get("bridge_port", 51820))
     mtu = int(link.get("wg_mtu", 1420))
-    server_private = link.get("wg_server_private_key") or _stable_awg_private(f"{link_id}:wg:server")
-    client_private = link.get("wg_client_private_key") or _stable_awg_private(f"{link_id}:wg:client")
-    server_public = link.get("wg_server_public_key") or _stable_awg_public(f"{link_id}:wg:server")
-    client_public = link.get("wg_client_public_key") or _stable_awg_public(f"{link_id}:wg:client")
+    server_private, server_public = _resolve_wg_keypair(
+        link, "wg_server_private_key", "wg_server_public_key", ("wg", "awg"), persist
+    )
+    client_private, client_public = _resolve_wg_keypair(
+        link, "wg_client_private_key", "wg_client_public_key", ("wg", "awg"), persist
+    )
     server_address = _normalize_ip_network(str(link.get("wg_address", "10.77.0.1/24")), "10.77.0.1/24")
     client_address = _normalize_ip_network(str(link.get("wg_client_address", "10.77.0.2/32")), "10.77.0.2/32")
+    client_allowed = _peer_host_route(client_address)
     allowed_ips = str(link.get("wg_allowed_ips") or "0.0.0.0/0, ::/0")
     keepalive = int(link.get("keepalive_interval", 25) or 25)
     interface_name = str(link.get("wg_interface", f"wg{str(link_id)[-4:]}")).replace("-", "")[:15] or "wg0"
@@ -509,7 +957,7 @@ def wireguard_config_for_link(link_id: str, link: dict[str, Any], role: str, pee
             "",
             "[Peer]",
             f"PublicKey = {client_public}",
-            "AllowedIPs = 10.77.0.2/32",
+            f"AllowedIPs = {client_allowed}",
             f"PersistentKeepalive = {keepalive}",
             "",
         ])
@@ -1543,7 +1991,19 @@ def _command_text(args: list[str]) -> str:
 
 def ssh_config_for_link(link_id: str, link: dict[str, Any], role: str, peer_ip: str) -> dict[str, Any]:
     mode = str(link.get("tunnel_mode") or "ssh_socks5")
-    bind_host = str(link.get("ssh_bind_host") or ("0.0.0.0" if mode != "ssh_jump" else "127.0.0.1"))
+    # Default to loopback so forwarded listeners are never exposed publicly by
+    # accident. A non-loopback bind requires the explicit ssh_expose_public opt-in.
+    bind_host = "127.0.0.1"
+    configured_bind = str(link.get("ssh_bind_host") or "").strip()
+    if configured_bind:
+        try:
+            bind_is_loopback = ipaddress.ip_address(configured_bind).is_loopback
+        except ValueError:
+            bind_is_loopback = False
+        if bind_is_loopback:
+            bind_host = configured_bind
+        elif bool(link.get("ssh_expose_public", False)):
+            bind_host = configured_bind
     bridge_port = _link_int(link, "bridge_port", 1080 if mode == "ssh_socks5" else 8443)
     port_map = _first_port_map(link)
     target_host = str(link.get("ssh_target_host") or "127.0.0.1")
@@ -1647,9 +2107,22 @@ def raw_socket_config_for_link(link_id: str, link: dict[str, Any], role: str, pe
         ],
     }
 
-def aead_config_for_link(link_id: str, link: dict[str, Any], role: str, peer_ip: str) -> dict[str, Any]:
+def aead_config_for_link(
+    link_id: str,
+    link: dict[str, Any],
+    role: str,
+    peer_ip: str,
+    persist: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     cipher = str(link.get("aead_cipher") or "aes-128-gcm").lower()
-    key_hex = str(link.get("aead_key") or _secret_hex(f"{link_id}:{cipher}", 16))
+    key_hex = str(link.get("aead_key") or "").strip()
+    if not key_hex:
+        # Prefer the per-link secret; generate once per call and persist so both
+        # sides of the tunnel observe the same key.
+        key_hex = str(link.get("tunnel_secret") or "").strip()
+        if not key_hex:
+            key_hex = secrets.token_urlsafe(32)
+            _persist_fields_once(persist, {"tunnel_secret": key_hex})
     mode = str(link.get("tunnel_mode") or "aead_port_forward")
     egress_mode = str(link.get("egress_mode") or ("socks5" if "socks5" in mode else "port_forward"))
     bridge_port = _link_int(link, "bridge_port", 7443 if egress_mode == "port_forward" else 1080)
@@ -1704,6 +2177,37 @@ def profile_decision_metadata(profile_id, profile):
     if engine in ("rathole", "backhaul", "frp", "builtin", "amneziawg", "wireguard"):
         speed += 14
         stability += 10
+    if engine == "hedioum":
+        speed += 12
+        security += 12
+        stability += 14
+        if mode == "hedioum_pool":
+            stability += 8
+            speed += 4
+    if engine == "cloak":
+        security += 24
+        stability += 10
+        speed -= 4
+        if transport == "cloak_mux":
+            speed += 8
+            stability += 4
+    if engine == "phormal":
+        speed += 8
+        stability += 6
+        if mode == "phormal_relay":
+            speed += 14
+            security += 8
+        elif mode == "phormal_bridge":
+            stability += 10
+        elif mode == "phormal_reverse":
+            stability += 12
+            speed -= 2
+        elif mode in ("phormal_gre", "phormal_raw"):
+            speed += 10
+            security -= 8
+        elif mode == "phormal_echo":
+            speed -= 10
+            stability += 4
     if engine == "wireguard" or transport == "wireguard_udp":
         speed += 12
         security += 8
@@ -1718,8 +2222,10 @@ def profile_decision_metadata(profile_id, profile):
     if mode in ("tcp", "reverse_tcp") and not tls:
         security -= 18
         speed += 8
-    if mode in ("grpc", "reality_grpc", "mux_grpc", "http2_tls", "h2", "ech_h2", "xhttp"):
+    if mode in ("grpc", "reality_grpc", "mux_grpc", "http2_tls", "h2", "ech_h2", "xhttp", "httpupgrade") or transport == "httpupgrade":
         stability += 10
+        security += 6
+        speed += 4
     if mode in ("masque_connect_udp", "masque_quic_proxy"):
         security += 14
         speed += 8
@@ -1742,9 +2248,9 @@ def profile_decision_metadata(profile_id, profile):
 
     if profile_id in ("easy", "hard", "resilient"):
         category = "recommended"
-    elif engine in ("hysteria2", "tuic", "singbox", "naiveproxy", "shadowtls", "mieru", "brook", "masque"):
+    elif engine in ("hysteria2", "tuic", "singbox", "xray", "naiveproxy", "shadowtls", "mieru", "brook", "masque", "hedioum", "cloak"):
         category = "stealth"
-    elif engine in ("rathole", "backhaul", "frp", "chisel", "gost"):
+    elif engine in ("rathole", "backhaul", "frp", "chisel", "gost", "phormal"):
         category = "classic"
     elif engine in ("amneziawg", "wireguard", "muxquantum"):
         category = "advanced"
@@ -1775,13 +2281,169 @@ def profile_decision_metadata(profile_id, profile):
 
 
 # --------- External engine config builders ---------
-def hysteria2_config_for_link(link, role):
-    psk = link.get("xray_uuid") or str(uuid.uuid4())
+def phormal_config_for_link(link_id: str, link: dict[str, Any], role: str, peer_ip: str) -> dict[str, Any]:
+    mode = str(link.get("tunnel_mode") or "phormal_bridge").replace("phormal_", "")
+    product = {
+        "bridge": "Bridge",
+        "relay": "Relay",
+        "reverse": "Reverse",
+        "gre": "GRE",
+        "echo": "Echo",
+        "raw": "Raw",
+    }.get(mode, "Bridge")
+    listen_port = int(link.get("bridge_port", 7000) or 7000)
+    sync_port = int(link.get("sync_port", 7001) or 7001)
+    local_role = normalize_role(role)
+    host_requirements = ["systemd", "iproute2", "CAP_NET_ADMIN"]
+    if mode in {"echo", "raw"}:
+        host_requirements.append("CAP_NET_RAW")
+    if mode == "echo":
+        host_requirements.append("ICMP echo policy review")
+    return {
+        "engine": "phormal",
+        "product": product,
+        "mode": mode,
+        "role": local_role,
+        "peer": peer_ip,
+        "ports": {
+            "bridge": listen_port,
+            "sync": sync_port,
+        },
+        "native_manager": True,
+        "safe_launch_policy": "manual-opt-in",
+        "host_requirements": host_requirements,
+        "risk_controls": [
+            "P00RIJA does not run the Phormal installer automatically.",
+            "Review generated Phormal settings on both nodes before starting host-level services.",
+            "Avoid GRE/Echo/Raw inside restricted Docker containers unless the required capabilities are explicitly granted.",
+        ],
+        "recommended_runtime": {
+            "unit_prefix": f"phormal-{mode}",
+            "max_nofile": min(65535, int(link.get("phormal_nofile_limit", 65535) or 65535)),
+            "restart_sec": max(5, int(link.get("phormal_restart_sec", 5) or 5)),
+            "keepalive_sec": max(10, int(link.get("keepalive_interval", 15) or 15)),
+        },
+    }
+
+
+def hedioum_config_for_link(
+    link_id: str,
+    link: dict[str, Any],
+    role: str,
+    peer_ip: str,
+    persist: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    local_role = normalize_role(role)
+    tunnel_mode = str(link.get("tunnel_mode") or "hedioum_pool")
+    token = str(link.get("hedioum_auth_token") or "").strip()
+    if not token:
+        # Never derive the pool token from the link id; use the per-link secret
+        # or generate once and persist so both sides share it.
+        token = str(link.get("tunnel_secret") or "").strip()
+        if not token:
+            token = secrets.token_urlsafe(32)
+            _persist_fields_once(persist, {"tunnel_secret": token})
+    min_conn = max(1, min(8, int(link.get("hedioum_min_connections", 3) or 3)))
+    max_conn = max(min_conn, min(32, int(link.get("hedioum_max_connections", 12) or 12)))
+    cap_mbps = max(1, min(1000, int(link.get("hedioum_bandwidth_limit_mbps", 8) or 8)))
+    jitter_mbps = max(0, min(cap_mbps, int(link.get("hedioum_jitter_mbps", 2) or 2)))
+    listen_port = int(link.get("bridge_port", 22) or 22)
+    socks_port = int(link.get("hedioum_local_socks_port", link.get("bridge_port", 40001)) or 40001)
+    target_port = int(link.get("hedioum_target_port", listen_port) or listen_port)
+    if tunnel_mode == "hedioum_egress" or local_role == "external":
+        return {
+            "engine": "hedioum",
+            "role": "foreign",
+            "foreign_listen_port": listen_port,
+            "auth_token": token,
+            "decoy_target": str(link.get("hedioum_decoy_target") or "127.0.0.1:2022"),
+            "move_ssh_port": False,
+            "safe_launch_policy": "manual-opt-in",
+            "risk_controls": [
+                "P00RIJA does not move OpenSSH to another port automatically.",
+                "Use a firewall window and out-of-band console before binding Hedioum to port 22.",
+                "Keep systemd restart limits conservative to avoid tight crash loops.",
+            ],
+        }
+    return {
+        "engine": "hedioum",
+        "role": "iran",
+        "local_socks_port": socks_port,
+        "foreign_nodes": [
+            {
+                "alias": str(link.get("hedioum_foreign_alias") or "foreign-1"),
+                "target_ip": peer_ip,
+                "target_port": target_port,
+                "local_socks_port": socks_port,
+                "min_connections": min_conn,
+                "max_connections": max_conn,
+                "bandwidth_limit_mbps": cap_mbps,
+                "bandwidth_jitter_mbps": jitter_mbps,
+                "auth_token": token,
+            }
+        ],
+        "safe_launch_policy": "manual-opt-in",
+        "risk_controls": [
+            "Pool defaults are capped to avoid connection storms.",
+            "Scale-up should be tied to real throughput and server pressure.",
+            "Use one hub pool per remote egress and route client streams through the pool instead of creating unbounded per-user TCP sessions.",
+        ],
+    }
+
+
+def _link_credential_uuid(
+    link: dict[str, Any],
+    persist: Callable[[dict[str, Any]], None] | None,
+    field: str = "xray_uuid",
+) -> str:
+    """Return the link's credential value, generating and persisting it once.
+
+    Without a persist callback a missing credential is a hard error instead of a
+    silent per-call uuid4 rotation that desynchronizes the two tunnel sides.
+    """
+    value = str(link.get(field) or "").strip()
+    if value:
+        return value
+    if persist is None:
+        raise ValueError(f"{field} missing on link and no persist callback provided — regenerate link")
+    value = str(uuid.uuid4())
+    _persist_fields_once(persist, {field: value})
+    return value
+
+
+def hysteria2_config_for_link(
+    link,
+    role,
+    peer_ip: str = "127.0.0.1",
+    persist: Callable[[dict[str, Any]], None] | None = None,
+):
+    psk = _link_credential_uuid(link, persist)
     listen_port = int(link.get("bridge_port", 7000))
     sni = link.get("tls_sni", "speedtest.net")
-    
+    tunnel_mode = str(link.get("tunnel_mode") or "")
+
+    def bandwidth_text(value: Any) -> str:
+        try:
+            return f"{int(value)} mbps"
+        except (TypeError, ValueError):
+            return "1000 mbps"
+
+    bandwidth = {
+        "up": bandwidth_text(link.get("hysteria_up_mbps")),
+        "down": bandwidth_text(link.get("hysteria_down_mbps")),
+    }
+    # Hysteria2 salamander obfuscation must be identical on both sides; the
+    # correct type key is "salamander" (upstream also accepts "salamoder").
+    salamander = tunnel_mode == "hysteria2_salamander" or str(link.get("obfs_layer")) == "salamander"
+    obfs_password = ""
+    if salamander:
+        obfs_password = str(link.get("tunnel_secret") or "").strip()
+        if not obfs_password:
+            obfs_password = secrets.token_urlsafe(32)
+            _persist_fields_once(persist, {"tunnel_secret": obfs_password})
+
     if normalize_role(role) == "external":
-        return {
+        server_config = {
             "listen": f":{listen_port}",
             "tls": {
                 "cert": f"{CONFIG_DIR}/certs/cert.pem",
@@ -1791,41 +2453,72 @@ def hysteria2_config_for_link(link, role):
                 "type": "password",
                 "password": psk
             },
-            "bandwidth": {
-                "up": "1000 mbps",
-                "down": "1000 mbps"
-            }
+            "bandwidth": bandwidth
         }
-    
+        if salamander:
+            server_config["obfs"] = {"type": "salamander", "password": obfs_password}
+        if tunnel_mode == "http3_masquerade":
+            server_config["masquerade"] = {
+                "type": "proxy",
+                "url": "https://news.ycombinator.com/",
+                "rewriteHost": True,
+            }
+        return server_config
+
     tcp_fw = []
     for p in link.get("ports", []):
         tcp_fw.append({
             "listen": f"0.0.0.0:{p.get('user_port', p.get('target_port'))}",
             "remote": f"{p.get('target_host') or '127.0.0.1'}:{p.get('target_port', 443)}"
         })
-        
-    other_ip = link.get("external_ip") or link.get("peer_ip") or link.get("client_ip") or "127.0.0.1"
+
+    other_ip = str(peer_ip or "127.0.0.1")
     if ":" in other_ip:
         other_ip = f"[{other_ip}]"
-        
-    return {
+
+    client_config = {
         "server": f"{other_ip}:{listen_port}",
         "auth": psk,
         "tls": {
             "sni": sni,
-            "insecure": True
+            "insecure": bool(link.get("tls_insecure", False))
         },
-        "bandwidth": {
-            "up": "1000 mbps",
-            "down": "1000 mbps"
-        },
+        "bandwidth": bandwidth,
         "tcpForwarding": tcp_fw
     }
+    if salamander:
+        client_config["obfs"] = {"type": "salamander", "password": obfs_password}
+    return client_config
 
-def muxquantum_config_for_link(lid, link, role, other_ip):
-    psk = str(lid)
+def _local_port_free(port: int) -> bool:
+    """True when both a TCP and a UDP socket can bind 0.0.0.0:<port> locally."""
+    for sock_type in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        probe = socket.socket(socket.AF_INET, sock_type)
+        try:
+            probe.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+        finally:
+            probe.close()
+    return True
+
+
+def muxquantum_config_for_link(
+    lid,
+    link,
+    role,
+    other_ip,
+    persist: Callable[[dict[str, Any]], None] | None = None,
+):
+    psk = str(link.get("tunnel_secret") or "").strip()
+    if not psk:
+        # Never use the link id as the pre-shared key; generate once per call
+        # and persist so both sides reuse the same secret.
+        psk = secrets.token_urlsafe(32)
+        _persist_fields_once(persist, {"tunnel_secret": psk})
     transport = link.get("transport", link.get("tunnel_mode", "httpsmux"))
     bridge_port = int(link.get("bridge_port", 7000))
+    sync_port = int(link.get("sync_port", 7001))
     cover_by_transport = {
         "httpsmux": "https",
         "mux_wss": "websocket_tls",
@@ -1858,7 +2551,17 @@ def muxquantum_config_for_link(lid, link, role, other_ip):
             "target": f"127.0.0.1:{p.get('target_port')}"
         })
     if not maps:
-        maps.append({"type": "tcp", "bind": f"0.0.0.0:{bridge_port+1}", "target": "127.0.0.1:443"})
+        # Never fall back to bridge_port+1: the sync listener sits right next to
+        # the bridge port, so bridge_port+1 collides with it. Prefer sync_port+1,
+        # then bridge_port+2, and skip the fallback mapping if neither is free.
+        for candidate in (sync_port + 1, bridge_port + 2):
+            if (
+                1 <= candidate <= 65535
+                and candidate not in (bridge_port, sync_port)
+                and _local_port_free(candidate)
+            ):
+                maps.append({"type": "tcp", "bind": f"0.0.0.0:{candidate}", "target": "127.0.0.1:443"})
+                break
 
     obfs = {
         "enabled": True if link.get("padding_max", 0) > 0 else False,
@@ -1905,42 +2608,58 @@ def muxquantum_config_for_link(lid, link, role, other_ip):
         "obfuscation": obfs
     }
 
-def xray_config_for_link(link, role):
+def xray_config_for_link(
+    link,
+    role,
+    peer_ip: str = "127.0.0.1",
+    persist: Callable[[dict[str, Any]], None] | None = None,
+):
     protocol = link.get("xray_protocol", "vless")
     security = link.get("xray_security", "reality")
     listen_port = int(link.get("bridge_port", 7000))
-    target_port = int((link.get("ports") or [{"target_port": 443}])[0].get("target_port", 443))
-    
+
     server_names = [s.strip() for s in link.get("xray_sni", "www.microsoft.com").split(",") if s.strip()]
     if not server_names:
         server_names = ["www.microsoft.com"]
-    
-    private_key = link.get("xray_private_key", "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM=")
-    public_key = link.get("xray_public_key", "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM=")
+
+    private_key = str(link.get("xray_private_key") or "").strip()
+    public_key = str(link.get("xray_public_key") or "").strip()
+    if security == "reality" and (not private_key or not public_key):
+        # Silent "M"*43 placeholder keys produced a handshake that could never
+        # succeed; fail loudly instead so the operator regenerates the link.
+        raise ValueError("REALITY keys missing — regenerate link")
     short_id = link.get("xray_shortid", "0123456789abcdef")
     flow = link.get("xray_flow", "xtls-rprx-vision")
-    uuid_val = link.get("xray_uuid") or str(uuid.uuid4())
+    uuid_val = _link_credential_uuid(link, persist)
+    # REALITY borrows a real TLS handshake: default the target to the first
+    # serverName on 443 unless the link explicitly overrides it.
+    reality_target = str(link.get("xray_reality_target") or f"{server_names[0]}:443")
 
     transport = str(link.get("transport") or link.get("tunnel_mode") or "tcp")
     xhttp_enabled = transport == "xhttp" or link.get("tunnel_mode") == "xhttp"
-    network_name = "xhttp" if xhttp_enabled else "raw"
+    httpupgrade_enabled = transport == "httpupgrade" or link.get("tunnel_mode") == "httpupgrade"
+    network_name = "xhttp" if xhttp_enabled else ("httpupgrade" if httpupgrade_enabled else "raw")
     xhttp_settings = {
         "path": str(link.get("obfs_path") or "/xhttp"),
         "mode": str(link.get("xhttp_mode") or "auto"),
     }
     if link.get("xhttp_auto_select", True):
         xhttp_settings["mode"] = "auto"
+    httpupgrade_settings = {
+        "path": str(link.get("obfs_path") or "/cdn-cgi/p00rija-upgrade"),
+        "host": str(link.get("obfs_host") or link.get("tls_sni") or server_names[0]),
+    }
 
     if normalize_role(role) == "external":
         client = {"id": uuid_val}
-        if flow and not xhttp_enabled:
+        if flow and not xhttp_enabled and not httpupgrade_enabled:
             client["flow"] = flow
         stream_settings = {
             "network": network_name,
             "security": security,
             "realitySettings": {
                 "show": False,
-                "target": "1.1.1.1:443",
+                "target": reality_target,
                 "xver": 0,
                 "serverNames": server_names,
                 "privateKey": private_key,
@@ -1949,6 +2668,8 @@ def xray_config_for_link(link, role):
         }
         if xhttp_enabled:
             stream_settings["xhttpSettings"] = xhttp_settings
+        if httpupgrade_enabled:
+            stream_settings["httpupgradeSettings"] = httpupgrade_settings
         return {
             "log": {"loglevel": "warning"},
             "inbounds": [{
@@ -1964,7 +2685,7 @@ def xray_config_for_link(link, role):
             "outbounds": [{"protocol": "freedom", "tag": "direct"}]
         }
     user = {"id": uuid_val, "encryption": "none"}
-    if flow and not xhttp_enabled:
+    if flow and not xhttp_enabled and not httpupgrade_enabled:
         user["flow"] = flow
     stream_settings = {
         "network": network_name,
@@ -1980,16 +2701,21 @@ def xray_config_for_link(link, role):
     }
     if xhttp_enabled:
         stream_settings["xhttpSettings"] = xhttp_settings
+    if httpupgrade_enabled:
+        stream_settings["httpupgradeSettings"] = httpupgrade_settings
+    # The client-side SOCKS inbound is a local listener: use the link's local
+    # port, never the remote target port.
+    local_inbound_port = int(link.get("local_port") or link.get("user_port") or 1080)
     return {
         "log": {"loglevel": "warning"},
-        "inbounds": [{"tag": "p00rija-socks-in", "port": target_port, "listen": "127.0.0.1", "protocol": "socks"}],
+        "inbounds": [{"tag": "p00rija-socks-in", "port": local_inbound_port, "listen": "127.0.0.1", "protocol": "socks"}],
         "outbounds": [{
             "tag": "p00rija-xray-out",
             "protocol": protocol,
             "settings": {
                 "vnext": [{
-                    "address": link.get("external_ip", link.get("iran_ip", "127.0.0.1")), 
-                    "port": listen_port, 
+                    "address": str(peer_ip or "127.0.0.1"),
+                    "port": listen_port,
                     "users": [user]
                 }]
             },
@@ -1998,11 +2724,97 @@ def xray_config_for_link(link, role):
     }
 
 
-def singbox_config_for_link(link, role):
+def singbox_config_for_link(
+    link,
+    role,
+    peer_ip: str = "127.0.0.1",
+    persist: Callable[[dict[str, Any]], None] | None = None,
+):
     listen_port = int(link.get("bridge_port", 7000))
-    target_port = int((link.get("ports") or [{"target_port": 443}])[0].get("target_port", 443))
-    uuid_val = link.get("xray_uuid") or str(uuid.uuid4())
+    uuid_val = _link_credential_uuid(link, persist)
     server_name = str(link.get("tls_sni") or link.get("obfs_host") or "www.cloudflare.com")
+    profile_name = " ".join(
+        str(link.get(key) or "")
+        for key in ("profile_id", "tunnel_mode", "name")
+    ).lower()
+    is_reality = "reality" in profile_name
+
+    if is_reality:
+        short_id = str(link.get("xray_shortid") or "").strip()
+        private_key = str(link.get("xray_private_key") or "").strip()
+        public_key = str(link.get("xray_public_key") or "").strip()
+        generated: dict[str, Any] = {}
+        if not short_id:
+            short_id = secrets.token_hex(8)
+            generated["xray_shortid"] = short_id
+        if not (private_key and public_key):
+            pair = _xray_x25519_keypair()
+            if pair is None:
+                raise ValueError(
+                    "REALITY keys missing and the bundled xray binary is unavailable — regenerate link"
+                )
+            if not private_key:
+                private_key = pair[0]
+                generated["xray_private_key"] = private_key
+            if not public_key:
+                public_key = pair[1]
+                generated["xray_public_key"] = public_key
+        _persist_fields_once(persist, generated)
+        flow = str(link.get("xray_flow") or "xtls-rprx-vision")
+        # xtls-rprx-vision is incompatible with multiplexing.
+        multiplex = {"enabled": False}
+        if normalize_role(role) == "external":
+            return {
+                "log": {"level": "warn"},
+                "inbounds": [{
+                    "type": "vless",
+                    "tag": "p00rija-in",
+                    "listen": "::",
+                    "listen_port": listen_port,
+                    "users": [{"uuid": uuid_val, "flow": flow}],
+                    "tls": {
+                        "enabled": True,
+                        "server_name": server_name,
+                        "reality": {
+                            "enabled": True,
+                            "handshake": {"server": server_name, "server_port": 443},
+                            "private_key": private_key,
+                            "short_id": short_id,
+                        },
+                    },
+                    "multiplex": multiplex,
+                }],
+                "outbounds": [{"type": "direct", "tag": "direct"}],
+            }
+        local_inbound_port = int(link.get("local_port") or link.get("user_port") or 1080)
+        return {
+            "log": {"level": "warn"},
+            "inbounds": [{
+                "type": "socks",
+                "tag": "p00rija-socks",
+                "listen": "127.0.0.1",
+                "listen_port": local_inbound_port,
+            }],
+            "outbounds": [{
+                "type": "vless",
+                "tag": "p00rija-out",
+                "server": str(peer_ip or "127.0.0.1"),
+                "server_port": listen_port,
+                "uuid": uuid_val,
+                "tls": {
+                    "enabled": True,
+                    "server_name": server_name,
+                    "utls": {"enabled": True, "fingerprint": "chrome"},
+                    "reality": {
+                        "enabled": True,
+                        "public_key": public_key,
+                        "short_id": short_id,
+                    },
+                },
+                "multiplex": multiplex,
+            }],
+        }
+
     multiplex = {
         "enabled": True,
         "protocol": "smux",
@@ -2031,11 +2843,15 @@ def singbox_config_for_link(link, role):
                 ech["config"] = configs
             ech["query_server_name"] = str(link.get("ech_query_server_name") or server_name)
         tls["ech"] = ech
+    cert_content = str(link.get("cert_content") or "").strip()
+    certs_dir = "/opt/p00rija/certs"
     if normalize_role(role) == "external":
         tls.update({
-            "certificate_path": "/opt/p00rija/certs/cert.pem",
-            "key_path": "/opt/p00rija/certs/key.pem",
+            "certificate_path": os.path.join(certs_dir, "cert.pem"),
+            "key_path": os.path.join(certs_dir, "key.pem"),
         })
+        if cert_content:
+            tls["certificate"] = [cert_content]
         return {
             "log": {"level": "warn"},
             "inbounds": [{
@@ -2049,18 +2865,25 @@ def singbox_config_for_link(link, role):
             }],
             "outbounds": [{"type": "direct", "tag": "direct"}],
         }
+    # Client TLS verification: trust the panel-managed cert when it is synced
+    # onto the link, otherwise skip verification only on explicit opt-in.
+    if cert_content:
+        tls["certificate"] = [cert_content]
+    elif bool(link.get("tls_insecure", False)):
+        tls["insecure"] = True
+    local_inbound_port = int(link.get("local_port") or link.get("user_port") or 1080)
     return {
         "log": {"level": "warn"},
         "inbounds": [{
             "type": "socks",
             "tag": "p00rija-socks",
             "listen": "127.0.0.1",
-            "listen_port": target_port,
+            "listen_port": local_inbound_port,
         }],
         "outbounds": [{
             "type": "vless",
             "tag": "p00rija-out",
-            "server": str(link.get("external_ip") or link.get("iran_ip") or "127.0.0.1"),
+            "server": str(peer_ip or "127.0.0.1"),
             "server_port": listen_port,
             "uuid": uuid_val,
             "tls": tls,
@@ -2069,7 +2892,7 @@ def singbox_config_for_link(link, role):
     }
 
 
-def masque_config_for_link(link, role):
+def masque_config_for_link(link, role, peer_ip: str = "127.0.0.1"):
     listen_port = int(link.get("bridge_port", 443))
     target_port = int((link.get("ports") or [{"target_port": 51820}])[0].get("target_port", 51820))
     mode = str(link.get("masque_mode") or "connect-udp")
@@ -2080,20 +2903,23 @@ def masque_config_for_link(link, role):
         "server_name": str(link.get("tls_sni") or link.get("obfs_host") or ""),
         "bearer_token": str(link.get("masque_token") or link.get("xray_uuid") or ""),
     }
+    cert_dir = "/opt/p00rija/certs"
     if normalize_role(role) == "external":
         return {
             **common,
             "mode": "server",
             "listen": f"0.0.0.0:{listen_port}",
             "target": f"127.0.0.1:{target_port}",
-            "certificate": "/opt/p00rija/certs/cert.pem",
-            "private_key": "/opt/p00rija/certs/key.pem",
+            "certificate": os.path.join(cert_dir, "cert.pem"),
+            "private_key": os.path.join(cert_dir, "key.pem"),
         }
+    # The client listens locally on the link's local port, not the remote target port.
+    local_inbound_port = int(link.get("local_port") or link.get("user_port") or 1080)
     return {
         **common,
         "mode": "client",
-        "server": f"{link.get('external_ip', link.get('iran_ip', '127.0.0.1'))}:{listen_port}",
-        "listen": f"127.0.0.1:{target_port}",
+        "server": f"{str(peer_ip or '127.0.0.1')}:{listen_port}",
+        "listen": f"127.0.0.1:{local_inbound_port}",
         "connect_ip": mode == "connect-ip",
         "auto_reconnect": True,
     }

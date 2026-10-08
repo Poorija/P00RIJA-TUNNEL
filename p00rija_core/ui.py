@@ -390,10 +390,10 @@ INDEX_HTML = """<!DOCTYPE html>
 
         main {
             flex-grow: 1;
-            padding: 32px;
-            max-width: 1400px;
+            padding: 32px 36px;
+            max-width: 1760px;
             margin: 0 auto;
-            width: calc(100% - 260px);
+            width: min(100%, calc(100vw - 260px));
             overflow-y: auto;
         }
 
@@ -612,8 +612,8 @@ INDEX_HTML = """<!DOCTYPE html>
             color: #d1fae5;
             border: 1px solid rgba(6, 182, 212, 0.35);
             border-radius: 8px;
-            min-height: 360px;
-            max-height: 52vh;
+            min-height: 410px;
+            max-height: 58vh;
             overflow: auto;
             padding: 14px;
             font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -621,7 +621,8 @@ INDEX_HTML = """<!DOCTYPE html>
             line-height: 1.45;
             direction: ltr;
             text-align: left;
-            white-space: pre-wrap;
+            white-space: pre;
+            tab-size: 4;
             outline: none;
         }
 
@@ -655,6 +656,58 @@ INDEX_HTML = """<!DOCTYPE html>
             align-items: center;
             gap: 8px;
             flex-wrap: nowrap;
+        }
+
+        #table-nodes .node-actions-line {
+            justify-content: flex-end;
+        }
+
+        .actions-dropdown {
+            position: relative;
+            display: inline-flex;
+            justify-content: flex-end;
+        }
+
+        .actions-menu-button {
+            gap: 8px;
+            min-width: 118px;
+            justify-content: center;
+            border: 1px solid rgba(6, 182, 212, 0.34) !important;
+            background: linear-gradient(135deg, rgba(6, 182, 212, 0.22), rgba(139, 92, 246, 0.18)) !important;
+            box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18), 0 0 14px rgba(6, 182, 212, 0.16);
+        }
+
+        .actions-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            inset-inline-end: 0;
+            min-width: 230px;
+            display: none;
+            grid-template-columns: 1fr;
+            gap: 7px;
+            padding: 10px;
+            border: 1px solid rgba(6, 182, 212, 0.26);
+            border-radius: 12px;
+            background: rgba(8, 20, 31, 0.98);
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(255,255,255,.03) inset;
+            z-index: 70;
+        }
+
+        .actions-dropdown.open .actions-menu {
+            display: grid;
+            animation: panelEnter 0.16s ease both;
+        }
+
+        .actions-menu .btn {
+            width: 100% !important;
+            min-height: 38px;
+            justify-content: flex-start;
+            text-align: start;
+            white-space: nowrap;
+        }
+
+        html[dir="rtl"] .actions-menu .btn {
+            justify-content: flex-end;
         }
 
         #table-nodes .tag-row {
@@ -1461,10 +1514,18 @@ INDEX_HTML = """<!DOCTYPE html>
                 white-space: normal;
             }
             #table-nodes .node-actions-line {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
+                display: flex;
+                justify-content: stretch;
             }
-            #table-nodes .node-actions-line .btn { width: 100% !important; min-height: 40px; }
+            #table-nodes .node-actions-line .actions-dropdown,
+            #table-nodes .node-actions-line .actions-menu-button { width: 100% !important; }
+            #table-nodes .node-actions-line .actions-menu {
+                position: static;
+                width: 100%;
+                margin-top: 8px;
+                min-width: 0;
+            }
+            #table-nodes .node-actions-line .btn { min-height: 40px; }
             .link-port-wrap { overflow: visible; }
             .link-port-table {
                 min-width: 0;
@@ -1493,7 +1554,6 @@ INDEX_HTML = """<!DOCTYPE html>
         @media (max-width: 430px) {
             .header-actions,
             .link-actions,
-            #table-nodes .node-actions-line,
             .tab-content > .flex-between > .flex-between { grid-template-columns: 1fr; }
             .category-metrics { grid-template-columns: 1fr !important; }
             .login-card { width: calc(100% - 20px); padding: 22px 16px; }
@@ -2123,12 +2183,6 @@ INDEX_HTML = """<!DOCTYPE html>
                                 فعال‌سازی ورود دو مرحله‌ای TOTP
                             </label>
                         </div>
-                        <div class="form-group">
-                            <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
-                                <input type="checkbox" id="setting-biometric" style="width: 18px; height: 18px;">
-                                فعال‌سازی بایومتریک مرورگر برای Quick Unlock
-                            </label>
-                        </div>
                         <button type="submit" class="btn w-auto p-10">ثبت تنظیمات امنیتی</button>
                     </form>
                     <p id="totp-secret-box" class="tag-pill mt-20 hidden" style="direction:ltr; text-align:left;"></p>
@@ -2482,7 +2536,7 @@ INDEX_HTML = """<!DOCTYPE html>
                     </div>
                 </div>
                 <div class="compact-grid">
-                    <div class="tag-pill">نسخه: <span id="about-version">1.9.95</span></div>
+                    <div class="tag-pill">نسخه: <span id="about-version">1.9.99</span></div>
                     <div class="tag-pill">لایسنس: <span id="about-license">GPL-3.0</span></div>
                     <a class="tag-pill" href="https://github.com/Poorija" target="_blank" rel="noopener">گیت‌هاب: github.com/Poorija</a>
                     <a class="tag-pill" href="mailto:mohammadmahdi.farhadianfard@gmail.com">mohammadmahdi.farhadianfard@gmail.com</a>
@@ -2624,6 +2678,16 @@ INDEX_HTML = """<!DOCTYPE html>
                         <label>Timeout ثانیه</label>
                         <input id="ssh-timeout" type="number" class="form-input" value="15">
                     </div>
+                    <div class="form-group">
+                        <label>محیط شل ترمینال</label>
+                        <select id="ssh-shell" class="form-input">
+                            <option value="fish">Fish login shell</option>
+                            <option value="bash">Bash login shell</option>
+                            <option value="zsh">Zsh login shell</option>
+                            <option value="sh">POSIX sh</option>
+                            <option value="default">Default remote shell</option>
+                        </select>
+                    </div>
                 </div>
                 <div id="ssh-password-group" class="form-group">
                     <label>رمز عبور</label>
@@ -2645,6 +2709,9 @@ INDEX_HTML = """<!DOCTYPE html>
                     <span id="ssh-status" class="tag-pill">آماده اتصال</span>
                 </div>
                 <div id="ssh-output" class="ssh-terminal mt-20" tabindex="0" spellcheck="false"></div>
+                <small class="field-hint" style="display:block;margin-top:8px;">
+                    Tab، Backspace، Arrow keys، Ctrl/Alt shortcuts و paste چندخطی از طریق PTY واقعی ارسال می‌شوند. اگر fish روی نود نصب نباشد، خودکار به شل پیش‌فرض fallback می‌کند.
+                </small>
             </form>
         </div>
     </div>
@@ -3132,6 +3199,8 @@ INDEX_HTML = """<!DOCTYPE html>
         let currentFont = localStorage.getItem('p00rija_font') || 'vazirmatn';
         let sshTerminalSessionId = null;
         let sshTerminalPoller = null;
+        let sshResizeTimer = null;
+        let openNodeActionsMenuId = '';
 
         const translations = {
             dashboard: { fa: 'داشبورد', en: 'Dashboard' },
@@ -3357,7 +3426,6 @@ INDEX_HTML = """<!DOCTYPE html>
             'بروزرسانی مشخصات ورود': 'Update login',
             'امنیت ورود': 'Login security',
             'فعال‌سازی ورود دو مرحله‌ای TOTP': 'Enable TOTP two-factor login',
-            'فعال‌سازی بایومتریک مرورگر برای Quick Unlock': 'Enable browser biometric quick unlock',
             'ثبت تنظیمات امنیتی': 'Save security settings',
             'تنظیمات SSL/TLS وب پنل (HTTPS)': 'Panel SSL/TLS settings (HTTPS)',
             'فعال‌سازی HTTPS برای وب پنل': 'Enable HTTPS for panel',
@@ -3680,6 +3748,7 @@ INDEX_HTML = """<!DOCTYPE html>
             '127.0.0.1 یا panel.local': '127.0.0.1 or panel.local'
         });
         const originalTextNodes = new WeakMap();
+        let i18nCaptured = false;
 
         const attributeEnglish = {
             'node-name': 'INTERNAL-Node-1',
@@ -3702,13 +3771,15 @@ INDEX_HTML = """<!DOCTYPE html>
             const nodes = [];
             while (walker.nextNode()) nodes.push(walker.currentNode);
             nodes.forEach(node => {
-                if (!originalTextNodes.has(node)) originalTextNodes.set(node, node.nodeValue);
+                if (!i18nCaptured && !originalTextNodes.has(node)) originalTextNodes.set(node, node.nodeValue);
                 const original = originalTextNodes.get(node);
+                if (!original) return;
                 const raw = original.trim();
                 if (!raw) return;
                 if (currentLang === 'en' && staticEnglish[raw]) node.nodeValue = original.replace(raw, staticEnglish[raw]);
                 if (currentLang === 'fa') node.nodeValue = original;
             });
+            i18nCaptured = true;
         }
 
         function applyAttributeTranslations() {
@@ -3918,7 +3989,6 @@ INDEX_HTML = """<!DOCTYPE html>
                     const data = await res.json();
                     token = data.token;
                     localStorage.setItem('token', token);
-                    await maybeRegisterBiometric();
                     showPanel();
                 } else {
                     alert(tx('نام کاربری یا کلمه عبور نادرست است.', 'Username or password is incorrect.'));
@@ -3928,26 +3998,6 @@ INDEX_HTML = """<!DOCTYPE html>
                 alert(tx('خطا در پردازش ورود (کنسول مرورگر را بررسی کنید).', 'Error processing login (check browser console).'));
             }
         });
-
-        async function maybeRegisterBiometric() {
-            if (typeof latestStatus === 'undefined' || !latestStatus || !latestStatus.biometric_enabled || !window.PublicKeyCredential) return;
-            if (localStorage.getItem('p00rija_bio_registered') === '1') return;
-            try {
-                await navigator.credentials.create({
-                    publicKey: {
-                        challenge: crypto.getRandomValues(new Uint8Array(32)),
-                        rp: { name: 'P00RIJA TUNNEL' },
-                        user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'admin', displayName: 'P00RIJA Admin' },
-                        pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
-                        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'preferred' },
-                        timeout: 30000
-                    }
-                });
-                localStorage.setItem('p00rija_bio_registered', '1');
-            } catch (err) {
-                console.warn('Biometric registration skipped:', err);
-            }
-        }
 
         async function fetchXrayVersions() {
             if (!document.getElementById('setting-xray-version')) return;
@@ -4030,6 +4080,14 @@ INDEX_HTML = """<!DOCTYPE html>
                 clearInterval(autoGuardianTimer);
                 autoGuardianTimer = null;
             }
+            if (speedTestPollTimer) {
+                clearInterval(speedTestPollTimer);
+                speedTestPollTimer = null;
+            }
+            if (sshTerminalPoller) {
+                clearInterval(sshTerminalPoller);
+                sshTerminalPoller = null;
+            }
             document.getElementById('main-sidebar').classList.add('hidden');
             document.getElementById('main-workspace').classList.add('hidden');
             document.getElementById('login-screen').classList.remove('hidden');
@@ -4037,7 +4095,8 @@ INDEX_HTML = """<!DOCTYPE html>
         }
 
         function startPolling() {
-            document.getElementById("auto-refresh-select").value = "3";
+            const savedRefresh = localStorage.getItem('p00rija_auto_refresh');
+            document.getElementById("auto-refresh-select").value = (savedRefresh === null || savedRefresh === undefined) ? "3" : savedRefresh;
             setAutoRefresh();
         }
 
@@ -4073,7 +4132,6 @@ INDEX_HTML = """<!DOCTYPE html>
                 document.getElementById('setting-cert-path').value = latestStatus.cert_path || '';
                 document.getElementById('setting-key-path').value = latestStatus.key_path || '';
                 document.getElementById('setting-two-factor').checked = latestStatus.two_factor_enabled || false;
-                document.getElementById('setting-biometric').checked = latestStatus.biometric_enabled || false;
                 const disableIpv6El = document.getElementById('setting-disable-ipv6');
                 if (disableIpv6El) disableIpv6El.checked = latestStatus.disable_ipv6 || false;
                 const engineRestartIntervalEl = document.getElementById('setting-engine-restart-interval');
@@ -4191,10 +4249,9 @@ INDEX_HTML = """<!DOCTYPE html>
                 renderEngineManager(status.engines || {});
                 populateProfiles(status.tunnel_profiles || {}, { preserveSelection: isModalVisible('modal-add-link') });
                 renderProfileCatalog(status.tunnel_profiles || {});
-                document.getElementById('about-version').innerText = status.version || '1.9.95';
+                document.getElementById('about-version').innerText = status.version || '1.9.99';
                 document.getElementById('about-license').innerText = status.license || 'GPL-3.0';
                 updateLoginSecurity(status);
-                if (status.biometric_enabled) maybeRegisterBiometric();
 
                 renderCurrentTab(status, options);
                 return status;
@@ -4311,6 +4368,9 @@ INDEX_HTML = """<!DOCTYPE html>
             if (profile.engine === 'amneziawg') return 'AmneziaWG';
             if (profile.engine === 'wireguard') return 'WireGuard / Fastest';
             if (profile.engine === 'masque') return 'MASQUE / HTTP/3';
+            if (profile.engine === 'cloak') return 'Cloak / HTTPS camouflage';
+            if (profile.engine === 'phormal') return 'Phormal Multi-Product';
+            if (profile.engine === 'hedioum') return 'Hedioum Dynamic Pool';
             if (profile.engine === 'ssh') return 'SSH Forwarding';
             if (profile.engine === 'stunnel') return 'TLS Wrapping';
             if (profile.engine === 'aead' || ['client_port_forward', 'client_socks5'].includes(profile.tunnel_mode)) return 'AEAD / Client Egress';
@@ -4338,9 +4398,11 @@ INDEX_HTML = """<!DOCTYPE html>
         }
 
         function ratingIcon(profile, key, icon, labelFa, labelEn) {
-            const level = ratingLevel(profile, key);
+            const RATING_LEVELS = new Set(['good', 'normal', 'poor', 'fast', 'slow', 'secure', 'weak']);
+            let level = ratingLevel(profile, key);
+            level = RATING_LEVELS.has(level) ? level : 'normal';
             const label = `${tx(labelFa, labelEn)}: ${ratingLabel(profile, key)}`;
-            return `<span class="rating-icon ${level}" title="${esc(label)}" aria-label="${esc(label)}"><i data-lucide="${icon}"></i></span>`;
+            return `<span class="rating-icon ${esc(level)}" title="${esc(label)}" aria-label="${esc(label)}"><i data-lucide="${icon}"></i></span>`;
         }
 
         function ratingIcons(profile) {
@@ -4698,10 +4760,38 @@ INDEX_HTML = """<!DOCTYPE html>
             drawChart(charts.connections, '', [tx('اتصالات', 'Connections')]);
         }
 
+        function closeNodeActionMenus() {
+            document.querySelectorAll('.actions-dropdown.open').forEach(menu => menu.classList.remove('open'));
+            openNodeActionsMenuId = '';
+        }
+
+        function toggleNodeActionsMenu(nid, event) {
+            event?.preventDefault();
+            event?.stopPropagation();
+            const menu = document.querySelector(`.actions-dropdown[data-node-actions="${cssEscape(nid)}"]`);
+            if (!menu) return;
+            const willOpen = !menu.classList.contains('open');
+            closeNodeActionMenus();
+            if (willOpen) {
+                menu.classList.add('open');
+                openNodeActionsMenuId = nid;
+            }
+        }
+
+        document.addEventListener('click', (event) => {
+            if (!event.target.closest?.('.actions-dropdown')) closeNodeActionMenus();
+        });
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeNodeActionMenus();
+        });
+
         function renderNodes(nodes) {
             const tbody = document.querySelector('#table-nodes tbody');
             const existingRows = new Map(Array.from(tbody.querySelectorAll('tr[data-node-id]')).map(row => [row.dataset.nodeId, row]));
             const seen = new Set();
+            const touchedRows = [];
+            let lastPlacedRow = null;
             
             const trafficUnit = localStorage.getItem('trafficUnit') || 'MB';
             const divisor = trafficUnit === 'MB' ? (1024 * 1024) : 1024;
@@ -4717,6 +4807,7 @@ INDEX_HTML = """<!DOCTYPE html>
             orderedNodeIds.forEach((nid, nodeIndex) => {
                 seen.add(nid);
                 const n = nodes[nid];
+                const isActionMenuOpen = openNodeActionsMenuId === nid;
                 const stats = n.stats || { cpu: 0, ram: 0, rx_speed: 0, tx_speed: 0, threads: 0, connections: 0 };
                 const isOnline = n.status === 'online';
                 const isPaused = n.paused;
@@ -4753,43 +4844,62 @@ INDEX_HTML = """<!DOCTYPE html>
                 
                 const tr = existingRows.get(nid) || document.createElement('tr');
                 tr.dataset.nodeId = nid;
-                tr.innerHTML = `
-                    <td class="order-cell" data-label="${tx('ترتیب', 'Order')}">
-                        <div class="order-control" title="${tx('تغییر ترتیب نمایش', 'Change display order')}">
-                            <button class="order-button" onclick="moveNode('${nid}', -1)" ${nodeIndex === 0 ? 'disabled' : ''} title="${tx('انتقال به بالا', 'Move up')}"><i data-lucide="chevron-up"></i></button>
-                            <button class="order-button" onclick="moveNode('${nid}', 1)" ${nodeIndex === orderedNodeIds.length - 1 ? 'disabled' : ''} title="${tx('انتقال به پایین', 'Move down')}"><i data-lucide="chevron-down"></i></button>
-                        </div>
-                    </td>
-                    <td data-label="${tx('نام سرور', 'Server name')}"><div class="node-name-line"><strong>${esc(n.name)}</strong><span class="tag-row">${n.category ? `<span class="tag-pill tag-color-4">${esc(n.category)}</span>` : ''}${renderTags(n.tags || [])}</span></div></td>
-                    <td data-label="${tx('نقش', 'Role')}"><span class="tag-pill node-role"><span class="status-dot ${isOnline ? '' : 'offline'}"></span>${(n.role === 'internal' || n.role === 'iran') ? t('internal') : t('external')}</span></td>
-                    <td data-label="${tx('آدرس IP', 'IP address')}"><code>${esc(n.ip)}</code></td>
-                    <td data-label="${tx('وضعیت', 'Status')}"><span class="status-pill"><span class="status-dot ${isOnline ? (isPaused ? 'warning' : '') : 'offline'}"></span><span class="${statusClass}">${statusText}</span><span style="margin-inline-start:8px;">${pingText}</span></span></td>
-                    <td data-label="${tx('منابع سرور', 'Server resources')}">${tx('پردازنده', 'CPU')}: ${esc(stats.cpu)}% | ${tx('رم', 'RAM')}: ${esc(stats.ram)}%</td>
-                    <td data-label="${tx('ترافیک', 'Traffic')}">${tx('دانلود', 'Download')}: ${(stats.rx_speed / divisor).toFixed(1)} ${trafficUnit}/s | ${tx('آپلود', 'Upload')}: ${(stats.tx_speed / divisor).toFixed(1)} ${trafficUnit}/s</td>
-                    <td data-label="${tx('تردها/کانکشن', 'Threads/connections')}">${tx('تردها', 'Threads')}: ${stats.threads} | ${tx('فعال', 'Active')}: ${stats.connections}<br><small>${tx('شبکه', 'Network')}: ${esc(networkMode)}</small>${networkWarning}</td>
-                    <td data-label="${tx('عملیات', 'Actions')}">
-                        <div class="node-actions-line">
-                            <button class="btn w-auto p-10 btn-danger" onclick="deleteNode('${nid}')" style="background: var(--danger);">${t('delete')}</button>
-                            <button class="btn w-auto p-10" onclick="togglePauseNode('${nid}')" style="background: var(--warning); color: #000;">${isPaused ? tx('فعال‌سازی', 'Resume') : tx('توقف', 'Pause')}</button>
-                            <button class="btn w-auto p-10" onclick="editNode('${nid}')" style="background: #10b981; color: white; box-shadow: 0 0 10px #10b981;">${tx('ویرایش', 'Edit')}</button>
-                            <button class="btn w-auto p-10" onclick="testNodeConnection('${nid}')">${tx('تست ارتباط', 'Test connection')}</button>
-                            <button class="btn w-auto p-10 btn-purple" onclick="openNodeSecrets('${nid}')">${tx('توکن/کلید', 'Token/Key')}</button>
-                            <button class="btn w-auto p-10 btn-purple" onclick="queueNodeUpdate('${nid}')">${tx('آپدیت نود', 'Update node')}</button>
-                            <button class="btn w-auto p-10 btn-cyan" onclick="checkNodeVersions('${nid}')">${tx('بررسی نسخه', 'Check version')}</button>
-                            <button class="btn w-auto p-10 btn-cyan" onclick="openNodeSshModal('${nid}')">SSH</button>
-                        </div>
-                        ${versionStatus}
-                        ${updateStatus}
-                    </td>
-                `;
-                // appendChild also moves an existing row, so order changes are
-                // visible immediately without requiring a page refresh.
-                tbody.appendChild(tr);
+                const freezeOpenRow = isActionMenuOpen && existingRows.has(nid) && tr.children.length;
+                if (!freezeOpenRow) {
+                    tr.innerHTML = `
+                        <td class="order-cell" data-label="${tx('ترتیب', 'Order')}">
+                            <div class="order-control" title="${tx('تغییر ترتیب نمایش', 'Change display order')}">
+                                <button class="order-button" onclick="moveNode('${nid}', -1)" ${nodeIndex === 0 ? 'disabled' : ''} title="${tx('انتقال به بالا', 'Move up')}"><i data-lucide="chevron-up"></i></button>
+                                <button class="order-button" onclick="moveNode('${nid}', 1)" ${nodeIndex === orderedNodeIds.length - 1 ? 'disabled' : ''} title="${tx('انتقال به پایین', 'Move down')}"><i data-lucide="chevron-down"></i></button>
+                            </div>
+                        </td>
+                        <td data-label="${tx('نام سرور', 'Server name')}"><div class="node-name-line"><strong>${esc(n.name)}</strong><span class="tag-row">${n.category ? `<span class="tag-pill tag-color-4">${esc(n.category)}</span>` : ''}${renderTags(n.tags || [])}</span></div></td>
+                        <td data-label="${tx('نقش', 'Role')}"><span class="tag-pill node-role"><span class="status-dot ${isOnline ? '' : 'offline'}"></span>${(n.role === 'internal' || n.role === 'iran') ? t('internal') : t('external')}</span></td>
+                        <td data-label="${tx('آدرس IP', 'IP address')}"><code>${esc(n.ip)}</code></td>
+                        <td data-label="${tx('وضعیت', 'Status')}"><span class="status-pill"><span class="status-dot ${isOnline ? (isPaused ? 'warning' : '') : 'offline'}"></span><span class="${statusClass}">${statusText}</span><span style="margin-inline-start:8px;">${pingText}</span></span></td>
+                        <td data-label="${tx('منابع سرور', 'Server resources')}">${tx('پردازنده', 'CPU')}: ${esc(stats.cpu)}% | ${tx('رم', 'RAM')}: ${esc(stats.ram)}%</td>
+                        <td data-label="${tx('ترافیک', 'Traffic')}">${tx('دانلود', 'Download')}: ${(stats.rx_speed / divisor).toFixed(1)} ${trafficUnit}/s | ${tx('آپلود', 'Upload')}: ${(stats.tx_speed / divisor).toFixed(1)} ${trafficUnit}/s</td>
+                        <td data-label="${tx('تردها/کانکشن', 'Threads/connections')}">${tx('تردها', 'Threads')}: ${stats.threads} | ${tx('فعال', 'Active')}: ${stats.connections}<br><small>${tx('شبکه', 'Network')}: ${esc(networkMode)}</small>${networkWarning}</td>
+                        <td data-label="${tx('عملیات', 'Actions')}">
+                            <div class="node-actions-line">
+                                <div class="actions-dropdown ${isActionMenuOpen ? 'open' : ''}" data-node-actions="${nid}">
+                                    <button class="btn w-auto p-10 actions-menu-button" onclick="toggleNodeActionsMenu('${nid}', event)" type="button">
+                                        <i data-lucide="more-horizontal"></i>
+                                        ${tx('عملیات', 'Actions')}
+                                    </button>
+                                    <div class="actions-menu">
+                                        <button class="btn w-auto p-10 btn-cyan" onclick="openNodeSshModal('${nid}'); closeNodeActionMenus();" type="button">SSH Terminal</button>
+                                        <button class="btn w-auto p-10" onclick="testNodeConnection('${nid}'); closeNodeActionMenus();" type="button">${tx('تست ارتباط', 'Test connection')}</button>
+                                        <button class="btn w-auto p-10 btn-cyan" onclick="checkNodeVersions('${nid}'); closeNodeActionMenus();" type="button">${tx('بررسی نسخه', 'Check version')}</button>
+                                        <button class="btn w-auto p-10 btn-purple" onclick="queueNodeUpdate('${nid}'); closeNodeActionMenus();" type="button">${tx('آپدیت نود', 'Update node')}</button>
+                                        <button class="btn w-auto p-10 btn-purple" onclick="openNodeSecrets('${nid}'); closeNodeActionMenus();" type="button">${tx('توکن/کلید', 'Token/Key')}</button>
+                                        <button class="btn w-auto p-10" onclick="editNode('${nid}'); closeNodeActionMenus();" style="background: #10b981; color: white; box-shadow: 0 0 10px #10b981;" type="button">${tx('ویرایش', 'Edit')}</button>
+                                        <button class="btn w-auto p-10" onclick="togglePauseNode('${nid}'); closeNodeActionMenus();" style="background: var(--warning); color: #000;" type="button">${isPaused ? tx('فعال‌سازی', 'Resume') : tx('توقف', 'Pause')}</button>
+                                        <button class="btn w-auto p-10 btn-danger" onclick="deleteNode('${nid}'); closeNodeActionMenus();" style="background: var(--danger);" type="button">${t('delete')}</button>
+                                    </div>
+                                </div>
+                            </div>
+                            ${versionStatus}
+                            ${updateStatus}
+                        </td>
+                    `;
+                    touchedRows.push(tr);
+                }
+                const expectedNode = lastPlacedRow ? lastPlacedRow.nextElementSibling : tbody.firstElementChild;
+                if (expectedNode !== tr) {
+                    tbody.insertBefore(tr, expectedNode || null);
+                }
+                lastPlacedRow = tr;
             });
             existingRows.forEach((row, nid) => {
                 if (!seen.has(nid)) row.remove();
             });
-            createInlineIcons(tbody);
+            if (openNodeActionsMenuId && !seen.has(openNodeActionsMenuId)) openNodeActionsMenuId = '';
+            if (openNodeActionsMenuId) {
+                touchedRows.forEach(row => createInlineIcons(row));
+            } else {
+                createInlineIcons(tbody);
+            }
         }
 
         function linkCategoryKey(link) {
@@ -4951,7 +5061,7 @@ INDEX_HTML = """<!DOCTYPE html>
                             <div class="link-card-main">
                               <div class="flex-between">
                                <div>
-                                <h3 style="font-size: 18px; margin-bottom: 6px;">${esc(l.name)} <span class="tag-pill" style="background: rgba(0,240,255,0.1); border-color: var(--accent-blue);">${modeText}${tlsText}</span></h3>
+                                <h3 style="font-size: 18px; margin-bottom: 6px;">${esc(l.name)} <span class="tag-pill" style="background: rgba(0,240,255,0.1); border-color: var(--accent-blue);">${esc(modeText)}${tlsText}</span></h3>
                                 <p style="font-size: 14px; color: var(--text-secondary);">
                                     ${tx('نود داخلی', 'Internal node')}: <strong>${esc(irNode.name)}</strong> <i data-lucide="arrow-right"></i> ${tx('نود خارجی', 'External node')}: <strong>${esc(foreignNode.name)}</strong>
                                 </p>
@@ -5138,8 +5248,8 @@ INDEX_HTML = """<!DOCTYPE html>
                 networks: [['tcp', 'TCP'], ['udp', 'UDP'], ['tcp_udp', 'TCP + UDP']]
             },
             xray: {
-                transports: [['tcp', 'TCP'], ['grpc', 'gRPC TLS'], ['h2', 'HTTP/2 TLS'], ['ws', 'WebSocket'], ['wss', 'WebSocket TLS']],
-                modes: [['vless_reality', 'Xray VLESS Reality'], ['reality_grpc', 'REALITY gRPC'], ['reality_h2', 'REALITY HTTP/2'], ['reality_ws', 'REALITY WebSocket']],
+                transports: [['tcp', 'TCP'], ['grpc', 'gRPC TLS'], ['h2', 'HTTP/2 TLS'], ['ws', 'WebSocket'], ['wss', 'WebSocket TLS'], ['httpupgrade', 'HTTPUpgrade']],
+                modes: [['vless_reality', 'Xray VLESS Reality'], ['reality_grpc', 'REALITY gRPC'], ['reality_h2', 'REALITY HTTP/2'], ['reality_ws', 'REALITY WebSocket'], ['httpupgrade', 'HTTPUpgrade + REALITY']],
                 networks: [['tcp', 'TCP']]
             },
             muxquantum: {
@@ -5216,6 +5326,11 @@ INDEX_HTML = """<!DOCTYPE html>
                 transports: [['raw_ip', 'Raw IP Socket']],
                 modes: [['raw_socket', 'Raw Socket']],
                 networks: [['tcp_udp', 'TCP + UDP']]
+            },
+            cloak: {
+                transports: [['cloak_https', 'Cloak HTTPS Camouflage'], ['cloak_mux', 'Cloak Multiplexed TCP']],
+                modes: [['cloak_tcp_bridge', 'Cloak TCP Bridge'], ['cloak_shadowsocks', 'Cloak Shadowsocks Plugin']],
+                networks: [['tcp', 'TCP']]
             }
         };
 
@@ -5234,7 +5349,7 @@ INDEX_HTML = """<!DOCTYPE html>
             tuic_quic: 'tuic', naive_https: 'naive', naive_h2: 'h2', http2_tls: 'h2',
             http3_masquerade: 'h3', hysteria2_salamander: 'quic', hysteria2_gecko: 'h3',
             anytls: 'anytls', anytls_h2: 'anytls', anytls_ws: 'anytls', ech_tls: 'ech', ech_h2: 'ech',
-            masque_connect_udp: 'masque_h3', masque_quic_proxy: 'connect_udp', xhttp: 'xhttp',
+            masque_connect_udp: 'masque_h3', masque_quic_proxy: 'connect_udp', xhttp: 'xhttp', httpupgrade: 'httpupgrade',
             tuic_udp_over_stream: 'udp_over_stream', turn_tls: 'turn_tls',
             mux_wss: 'mux_wss', mux_h2: 'mux_h2', mux_h3: 'mux_h3', mux_quic: 'mux_quic',
             mux_grpc: 'mux_grpc', mux_shadowtls: 'mux_shadowtls', mux_reality: 'mux_reality',
@@ -5244,11 +5359,12 @@ INDEX_HTML = """<!DOCTYPE html>
             ssh_socks5: 'ssh_dynamic', ssh_local_forward: 'ssh_local', ssh_remote_forward: 'ssh_remote',
             ssh_jump: 'ssh_jump', stunnel_tls_wrap: 'stunnel_tls', raw_socket: 'raw_ip',
             aead_port_forward: 'aead_tcp', aead_socks5: 'socks5',
-            client_port_forward: 'port_forward', client_socks5: 'socks5'
+            client_port_forward: 'port_forward', client_socks5: 'socks5',
+            cloak_tcp_bridge: 'cloak_https', cloak_shadowsocks: 'cloak_https'
         };
         const udpTunnelModes = ['udp', 'kcp', 'quic', 'tuic_quic', 'tuic_udp_over_stream', 'http3_masquerade', 'hysteria2_salamander', 'hysteria2_gecko', 'masque_connect_udp', 'masque_quic_proxy', 'mux_h3', 'mux_quic', 'mux_kcp', 'amneziawg_v2', 'wireguard_kernel'];
-        const tlsTunnelModes = ['websocket', 'http_obfs', 'grpc', 'wss', 'httpsmux', 'mux_wss', 'mux_h2', 'mux_h3', 'mux_quic', 'mux_grpc', 'mux_shadowtls', 'mux_reality', 'mux_anytls', 'mux_naive', 'quic', 'vless_reality', 'reality_grpc', 'reality_h2', 'reality_ws', 'xhttp', 'shadowtls', 'shadowtls_ws', 'shadowtls_h2', 'tuic_quic', 'tuic_udp_over_stream', 'naive_https', 'naive_h2', 'http2_tls', 'http3_masquerade', 'hysteria2_salamander', 'hysteria2_gecko', 'masque_connect_udp', 'masque_quic_proxy', 'anytls', 'anytls_h2', 'anytls_ws', 'ech_tls', 'ech_h2', 'turn_tls', 'stunnel_tls_wrap'];
-        const tlsTransports = ['wss', 'httpsmux', 'quic', 'h2', 'h3', 'grpc', 'xhttp', 'shadowtls', 'tuic', 'udp_over_stream', 'naive', 'anytls', 'ech', 'masque_h3', 'connect_udp', 'turn_tls', 'mux_wss', 'mux_h2', 'mux_h3', 'mux_quic', 'mux_grpc', 'mux_shadowtls', 'mux_reality', 'mux_anytls', 'mux_naive', 'stunnel_tls'];
+        const tlsTunnelModes = ['websocket', 'http_obfs', 'grpc', 'wss', 'httpsmux', 'mux_wss', 'mux_h2', 'mux_h3', 'mux_quic', 'mux_grpc', 'mux_shadowtls', 'mux_reality', 'mux_anytls', 'mux_naive', 'quic', 'vless_reality', 'reality_grpc', 'reality_h2', 'reality_ws', 'xhttp', 'httpupgrade', 'shadowtls', 'shadowtls_ws', 'shadowtls_h2', 'tuic_quic', 'tuic_udp_over_stream', 'naive_https', 'naive_h2', 'http2_tls', 'http3_masquerade', 'hysteria2_salamander', 'hysteria2_gecko', 'masque_connect_udp', 'masque_quic_proxy', 'anytls', 'anytls_h2', 'anytls_ws', 'ech_tls', 'ech_h2', 'turn_tls', 'stunnel_tls_wrap', 'cloak_tcp_bridge', 'cloak_shadowsocks'];
+        const tlsTransports = ['wss', 'httpsmux', 'quic', 'h2', 'h3', 'grpc', 'xhttp', 'httpupgrade', 'shadowtls', 'tuic', 'udp_over_stream', 'naive', 'anytls', 'ech', 'masque_h3', 'connect_udp', 'turn_tls', 'mux_wss', 'mux_h2', 'mux_h3', 'mux_quic', 'mux_grpc', 'mux_shadowtls', 'mux_reality', 'mux_anytls', 'mux_naive', 'stunnel_tls', 'cloak_https', 'cloak_mux'];
 
         function syncTunnelOptions(preferred = {}) {
             const engine = document.getElementById('link-engine').value;
@@ -5557,7 +5673,7 @@ INDEX_HTML = """<!DOCTYPE html>
                     <div class="ops-intel-card">
                         <span>${tx('هماهنگی نسخه نودها', 'Node version sync')}</span>
                         <strong class="${versionClass}">${esc(version.ok || 0)}/${esc(version.online || 0)}</strong>
-                        <small>${tx('هدف', 'Target')}: v${esc(intel.target_version || '1.9.95')} | ${tx('نیازمند آپدیت', 'Needs update')}: ${esc(drift + unknown)}</small>
+                        <small>${tx('هدف', 'Target')}: v${esc(intel.target_version || '1.9.99')} | ${tx('نیازمند آپدیت', 'Needs update')}: ${esc(drift + unknown)}</small>
                     </div>
                     <div class="ops-intel-card">
                         <span>${tx('امتیاز SLA تانل‌ها', 'Tunnel SLA score')}</span>
@@ -5934,7 +6050,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action, scope })
             });
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
             const box = document.getElementById('resource-result');
             if (box && !quiet) {
                 box.innerText = res.ok
@@ -6223,19 +6339,38 @@ INDEX_HTML = """<!DOCTYPE html>
             }
         }
 
-        function exportProfiles() {
-            window.location.href = `/api/profiles/export?token=${token}`;
+        async function exportProfiles() {
+            try {
+                const res = await fetch('/api/profiles/export', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!res.ok) throw new Error('Profile export failed');
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'p00rija-profiles.json';
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                alert(`${tx('خطا', 'Error')}: ${error.message || error}`);
+            }
         }
 
         async function importProfiles() {
             try {
                 const payload = JSON.parse(document.getElementById('profile-import').value);
                 const res = await fetch('/api/profiles/import', { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const data = await res.json().catch(() => ({}));
                 if (res.ok) {
-                    latestStatus.tunnel_profiles = (await res.json()).profiles;
+                    latestStatus.tunnel_profiles = data.profiles;
                     populateProfiles(latestStatus.tunnel_profiles);
                     renderProfileCatalog(latestStatus.tunnel_profiles);
                     alert(tx('پروفایل‌ها وارد شدند.', 'Profiles imported.'));
+                } else {
+                    alert(`${tx('خطا در ورود پروفایل‌ها', 'Profile import failed')}: ${data.error || tx('ناشناخته', 'Unknown')}`);
                 }
             } catch (err) {
                 alert(tx('JSON پروفایل نامعتبر است.', 'Invalid profile JSON.'));
@@ -6275,10 +6410,10 @@ INDEX_HTML = """<!DOCTYPE html>
                 },
                 body: JSON.stringify({ user_port: userPort.trim(), target_port: targetPort.trim() })
             });
+            const data = await res.json().catch(() => ({}));
             if (res.ok) {
                 fetchStatus();
             } else {
-                const data = await res.json();
                 alert(`${tx('خطا', 'Error')}: ${data.error || data.message || tx('ثبت ناموفق', 'Save failed')}`);
             }
         }
@@ -6522,6 +6657,7 @@ INDEX_HTML = """<!DOCTYPE html>
             document.getElementById('ssh-port').value = saved.port || 22;
             document.getElementById('ssh-username').value = saved.username || 'root';
             document.getElementById('ssh-auth-method').value = saved.auth_method || 'password';
+            document.getElementById('ssh-shell').value = saved.shell || 'fish';
             document.getElementById('ssh-password').placeholder = saved.has_password ? tx('رمز ذخیره شده است؛ برای تغییر وارد کنید', 'Saved; enter to change') : '';
             document.getElementById('ssh-private-key').placeholder = saved.has_private_key ? tx('کلید ذخیره شده است؛ برای تغییر وارد کنید', 'Saved; enter to change') : '';
             document.getElementById('ssh-password').value = '';
@@ -6536,15 +6672,19 @@ INDEX_HTML = """<!DOCTYPE html>
         }
 
         function sshPayloadBase() {
+            const dims = sshTerminalDimensions();
             return {
                 node_id: document.getElementById('ssh-node-id').value,
                 host: document.getElementById('ssh-host').value,
                 port: parseInt(document.getElementById('ssh-port').value || '22'),
                 username: document.getElementById('ssh-username').value,
                 auth_method: document.getElementById('ssh-auth-method').value,
+                shell: document.getElementById('ssh-shell')?.value || 'fish',
                 password: document.getElementById('ssh-password').value,
                 private_key: document.getElementById('ssh-private-key').value,
-                timeout: parseInt(document.getElementById('ssh-timeout').value || '15')
+                timeout: parseInt(document.getElementById('ssh-timeout').value || '15'),
+                cols: dims.cols,
+                rows: dims.rows
             };
         }
 
@@ -6563,6 +6703,36 @@ INDEX_HTML = """<!DOCTYPE html>
             const terminal = document.getElementById('ssh-output');
             terminal.textContent += text;
             terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function sshTerminalDimensions() {
+            const terminal = document.getElementById('ssh-output');
+            if (!terminal) return { cols: 120, rows: 28 };
+            const width = Math.max(320, terminal.clientWidth || 960);
+            const height = Math.max(220, terminal.clientHeight || 410);
+            const style = window.getComputedStyle(terminal);
+            const fontSize = parseFloat(style.fontSize || '13') || 13;
+            const lineHeight = parseFloat(style.lineHeight || `${fontSize * 1.45}`) || (fontSize * 1.45);
+            const cols = Math.max(40, Math.min(240, Math.floor((width - 28) / (fontSize * 0.62))));
+            const rows = Math.max(8, Math.min(80, Math.floor((height - 28) / lineHeight)));
+            return { cols, rows };
+        }
+
+        async function resizeSshTerminal(force = false) {
+            if (!sshTerminalSessionId) return;
+            if (!force) {
+                clearTimeout(sshResizeTimer);
+                sshResizeTimer = setTimeout(() => resizeSshTerminal(true), 160);
+                return;
+            }
+            const dims = sshTerminalDimensions();
+            try {
+                await fetch('/api/nodes/ssh/resize', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sshTerminalSessionId, ...dims })
+                });
+            } catch (err) {}
         }
 
         async function pollSshTerminal() {
@@ -6611,6 +6781,10 @@ INDEX_HTML = """<!DOCTYPE html>
                 clearInterval(sshTerminalPoller);
                 sshTerminalPoller = null;
             }
+            if (sshResizeTimer) {
+                clearTimeout(sshResizeTimer);
+                sshResizeTimer = null;
+            }
             if (sessionId) {
                 try {
                     await fetch('/api/nodes/ssh/close', {
@@ -6634,18 +6808,36 @@ INDEX_HTML = """<!DOCTYPE html>
                 Home: '\\x1b[H',
                 End: '\\x1b[F',
                 Delete: '\\x1b[3~',
+                Insert: '\\x1b[2~',
                 PageUp: '\\x1b[5~',
                 PageDown: '\\x1b[6~',
+                F1: '\\x1bOP',
+                F2: '\\x1bOQ',
+                F3: '\\x1bOR',
+                F4: '\\x1bOS',
+                F5: '\\x1b[15~',
+                F6: '\\x1b[17~',
+                F7: '\\x1b[18~',
+                F8: '\\x1b[19~',
+                F9: '\\x1b[20~',
+                F10: '\\x1b[21~',
+                F11: '\\x1b[23~',
+                F12: '\\x1b[24~',
             };
             if (e.key === 'Enter') sendSshTerminalInput('\\r');
-            else if (e.key === 'Backspace') sendSshTerminalInput('\\x7f');
-            else if (e.key === 'Tab') sendSshTerminalInput('\\t');
+            else if (e.key === 'Backspace') sendSshTerminalInput(e.ctrlKey || e.altKey ? '\\x17' : '\\x7f');
+            else if (e.key === 'Tab') sendSshTerminalInput(e.shiftKey ? '\\x1b[Z' : '\\t');
+            else if (e.key === 'Escape') sendSshTerminalInput('\\x1b');
             else if (specialKeys[e.key]) sendSshTerminalInput(specialKeys[e.key]);
-            else if (e.ctrlKey && e.key.toLowerCase() === 'c') sendSshTerminalInput('\\u0003');
-            else if (e.ctrlKey && e.key.toLowerCase() === 'd') sendSshTerminalInput('\\u0004');
-            else if (e.ctrlKey && e.key.toLowerCase() === 'l') {
-                document.getElementById('ssh-output').textContent = '';
-                sendSshTerminalInput('\\f');
+            else if ((e.ctrlKey || e.metaKey) && e.key.length === 1) {
+                const key = e.key.toUpperCase();
+                const code = key.charCodeAt(0);
+                if (code >= 64 && code <= 95) {
+                    if (key === 'L') document.getElementById('ssh-output').textContent = '';
+                    sendSshTerminalInput(String.fromCharCode(code - 64));
+                }
+            } else if (e.altKey && e.key.length === 1) {
+                sendSshTerminalInput('\\x1b' + e.key);
             } else if (e.key.length === 1) sendSshTerminalInput(e.key);
         });
 
@@ -6655,6 +6847,8 @@ INDEX_HTML = """<!DOCTYPE html>
             const text = e.clipboardData?.getData('text') || '';
             if (text) sendSshTerminalInput(text.replace(/\\n/g, '\\r'));
         });
+
+        window.addEventListener('resize', () => resizeSshTerminal(false));
 
         async function suggestNextLinkPorts(force = false) {
             const easyManual = !!document.getElementById('link-easy-mode')?.checked
@@ -6722,7 +6916,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ internal_node_id: internalId, external_node_id: externalId, direction, objective })
             });
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
             if (!res.ok) {
                 resultEl.innerText = data.error || tx('تست ناموفق بود', 'Test failed');
                 return;
@@ -6876,18 +7070,31 @@ INDEX_HTML = """<!DOCTYPE html>
 
         async function pollSpeedTestJob() {
             if (!currentSpeedTestJobId) return;
-            const response = await fetch(`/api/speedtest/status?id=${encodeURIComponent(currentSpeedTestJobId)}`, {
-                headers: { 'Authorization': `Bearer ${token}` },
-                cache: 'no-store'
-            });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) return;
-            renderSpeedTestJob(data.job || {});
-            if (['completed', 'failed'].includes(data.job?.state)) {
+            if (!token) {
+                clearInterval(speedTestPollTimer);
+                speedTestPollTimer = null;
+                return;
+            }
+            try {
+                const response = await fetch(`/api/speedtest/status?id=${encodeURIComponent(currentSpeedTestJobId)}`, {
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || tx('دریافت وضعیت تست ناموفق بود', 'Could not fetch speed test status'));
+                renderSpeedTestJob(data.job || {});
+                if (['completed', 'failed'].includes(data.job?.state)) {
+                    clearInterval(speedTestPollTimer);
+                    speedTestPollTimer = null;
+                    const button = document.getElementById('speedtest-start-btn');
+                    if (button) button.disabled = false;
+                }
+            } catch (error) {
                 clearInterval(speedTestPollTimer);
                 speedTestPollTimer = null;
                 const button = document.getElementById('speedtest-start-btn');
                 if (button) button.disabled = false;
+                alert(error.message || tx('دریافت وضعیت تست ناموفق بود', 'Could not fetch speed test status'));
             }
         }
 
@@ -7198,6 +7405,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 appendSshOutput(data.output || '');
                 sshTerminalPoller = setInterval(pollSshTerminal, 900);
                 outEl.focus();
+                resizeSshTerminal(true);
                 fetchStatus();
             } else {
                 statusEl.innerText = tx('اتصال ناموفق بود', 'Connection failed');
@@ -7471,10 +7679,10 @@ INDEX_HTML = """<!DOCTYPE html>
                 if (!response.ok) throw new Error(data.error || 'Could not list backups');
                 const backups = data.backups || [];
                 select.innerHTML = backups.length
-                    ? backups.map(item => `<option value="${escapeHtml(item.backup_id)}">${escapeHtml(item.filename)} (${formatBytes(item.size || 0)})</option>`).join('')
+                    ? backups.map(item => `<option value="${esc(item.backup_id)}">${esc(item.filename)} (${formatBytes(item.size || 0)})</option>`).join('')
                     : `<option value="">${tx('بکاپی در سرور وجود ندارد', 'No server backups found')}</option>`;
             } catch (error) {
-                select.innerHTML = `<option value="">${escapeHtml(error.message || String(error))}</option>`;
+                select.innerHTML = `<option value="">${esc(error.message || String(error))}</option>`;
             }
         }
 
@@ -7821,11 +8029,6 @@ INDEX_HTML = """<!DOCTYPE html>
 
         document.getElementById('form-settings-security').addEventListener('submit', async (e) => {
             e.preventDefault();
-            const biometricRequested = document.getElementById('setting-biometric').checked;
-            if (biometricRequested && !window.PublicKeyCredential) {
-                alert(tx('این مرورگر یا محیط فعلی از WebAuthn/بایومتریک پشتیبانی نمی‌کند.', 'This browser/environment does not support WebAuthn/biometric login.'));
-                return;
-            }
             const res = await fetch('/api/settings/security', {
                 method: 'POST',
                 headers: {
@@ -7833,8 +8036,7 @@ INDEX_HTML = """<!DOCTYPE html>
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    two_factor_enabled: document.getElementById('setting-two-factor').checked,
-                    biometric_enabled: biometricRequested
+                    two_factor_enabled: document.getElementById('setting-two-factor').checked
                 })
             });
             if (res.ok) {
@@ -7944,8 +8146,24 @@ INDEX_HTML = """<!DOCTYPE html>
             }
         }
 
-        function exportLogsCSV() {
-            window.location.href = `/api/logs/csv?token=${token}`;
+        async function exportLogsCSV() {
+            try {
+                const res = await fetch('/api/logs/csv', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!res.ok) throw new Error('Log export failed');
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'p00rija-logs.csv';
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                alert(`${tx('خطا', 'Error')}: ${error.message || error}`);
+            }
         }
 
         function openModal(id) {
@@ -7986,6 +8204,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
         function setAutoRefresh() {
             let val = parseInt(document.getElementById("auto-refresh-select").value);
+            if (!Number.isNaN(val)) localStorage.setItem('p00rija_auto_refresh', String(val));
             if (autoRefreshTimer) clearInterval(autoRefreshTimer);
             autoRefreshTimer = null;
             if (val > 0) {

@@ -2,7 +2,93 @@
 
 from __future__ import annotations
 
+import secrets
+import threading
+import time
+
 from http.server import BaseHTTPRequestHandler
+
+# Background "update all engines" jobs (mirrors the speedtest job pattern).
+_ENGINE_UPDATE_ALL_JOBS: dict = {}
+_ENGINE_UPDATE_ALL_JOBS_LOCK = threading.Lock()
+_ENGINE_UPDATE_ALL_JOB_MAX = 20
+
+
+def _engine_update_all_job_update(job_id, **fields):
+    with _ENGINE_UPDATE_ALL_JOBS_LOCK:
+        job = _ENGINE_UPDATE_ALL_JOBS.get(job_id)
+        if not job:
+            return None
+        job.update(fields)
+        job["updated_at"] = time.time()
+        return dict(job)
+
+
+def _get_engine_update_all_job(job_id):
+    with _ENGINE_UPDATE_ALL_JOBS_LOCK:
+        job = _ENGINE_UPDATE_ALL_JOBS.get(str(job_id or ""))
+        return dict(job) if job else None
+
+
+def _run_engine_update_all_job(job_id):
+    """Sequentially update every engine with an available update."""
+    db_ref = globals().get("db")
+    try:
+        from p00rija_core.engine_updates import update_all_engines as core_update_all_engines
+
+        def _job_progress(update):
+            if isinstance(update, dict) and update:
+                _engine_update_all_job_update(job_id, **update)
+
+        summary = core_update_all_engines(
+            progress_cb=_job_progress,
+            check_updates=check_all_engine_updates,
+            updater=install_engine_from_github,
+        )
+        _engine_update_all_job_update(
+            job_id,
+            state="completed" if summary.get("success") else "completed_with_errors",
+            phase="completed",
+            current_engine="",
+            summary=summary,
+            finished_at=time.time(),
+        )
+    except Exception as exc:
+        _engine_update_all_job_update(job_id, state="failed", phase="failed", error=str(exc), finished_at=time.time())
+    finally:
+        try:
+            if db_ref is not None:
+                db_ref.log("panel", "info", f"Engine update-all job {job_id} finished.")
+        except Exception:
+            pass
+
+
+def _start_engine_update_all_job():
+    job_id = secrets.token_hex(12)
+    now = time.time()
+    with _ENGINE_UPDATE_ALL_JOBS_LOCK:
+        _ENGINE_UPDATE_ALL_JOBS[job_id] = {
+            "id": job_id,
+            "state": "running",
+            "phase": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "started_at": now,
+            "finished_at": None,
+            "total": 0,
+            "completed": 0,
+            "current_engine": "",
+            "targets": [],
+            "results": [],
+            "errors": [],
+        }
+        if len(_ENGINE_UPDATE_ALL_JOBS) > _ENGINE_UPDATE_ALL_JOB_MAX:
+            oldest = sorted(_ENGINE_UPDATE_ALL_JOBS.values(), key=lambda item: item.get("created_at", 0))[:-10]
+            for item in oldest:
+                _ENGINE_UPDATE_ALL_JOBS.pop(item["id"], None)
+    threading.Thread(target=_run_engine_update_all_job, args=(job_id,), daemon=True).start()
+    with _ENGINE_UPDATE_ALL_JOBS_LOCK:
+        return dict(_ENGINE_UPDATE_ALL_JOBS[job_id])
 
 
 def bind_runtime(namespace):
@@ -136,21 +222,54 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
-    def end_headers(self):
-        # Prevent CORS wildcard attack
-        origin = "*"
+    def cors_allowed_origins(self):
+        """Origins allowed to make credentialed CORS requests to this panel.
+
+        The panel's own host is always allowed; operators can extend this with
+        an explicit `cors_allow_origins` settings list. Arbitrary reflected
+        origins combined with Allow-Credentials would let any site read
+        authenticated panel responses, so anything else gets no CORS headers.
+        """
+        allowed: set[str] = set()
         try:
-            origin = self.headers.get("Origin", "*")
+            host = str(self.headers.get("Host", "") or "").split(",")[0].strip().lower()
+            if host:
+                allowed.add(host)
         except Exception:
-            origin = "*"
-        self.send_header('Access-Control-Allow-Origin', origin)
-        self.send_header('Access-Control-Allow-Credentials', 'true')
-        self.send_header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS')
-        self.send_header(
-            'Access-Control-Allow-Headers',
-            'Content-Type, Authorization, X-Node-Token, X-Backup-Password-B64, '
-            'X-Backup-Filename, X-New-Panel-Url, X-Regenerate-Certificate',
-        )
+            pass
+        try:
+            raw = db.data.get("settings", {}).get("cors_allow_origins") or []
+            if isinstance(raw, str):
+                raw = [raw]
+            for value in raw:
+                if isinstance(value, str) and value.strip():
+                    allowed.add(value.strip().lower().rstrip("/"))
+        except Exception:
+            pass
+        return allowed
+
+    def end_headers(self):
+        # Only emit CORS headers for the panel's own origin (or an explicit
+        # allowlist entry). Never reflect arbitrary origins together with
+        # Access-Control-Allow-Credentials: true.
+        try:
+            origin = str(self.headers.get("Origin", "") or "").strip()
+        except Exception:
+            origin = ""
+        if origin:
+            allowed = self.cors_allowed_origins()
+            normalized = origin.lower().rstrip("/")
+            origin_host = normalized.split("://", 1)[1] if "://" in normalized else normalized
+            if normalized in allowed or origin_host in allowed:
+                self.send_header('Access-Control-Allow-Origin', origin)
+                self.send_header('Access-Control-Allow-Credentials', 'true')
+                self.send_header('Vary', 'Origin')
+                self.send_header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS')
+                self.send_header(
+                    'Access-Control-Allow-Headers',
+                    'Content-Type, Authorization, X-Node-Token, X-Backup-Password-B64, '
+                    'X-Backup-Filename, X-New-Panel-Url, X-Regenerate-Certificate',
+                )
         if db.data["settings"].get("panel_tls", PANEL_TLS_FORCED):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "same-origin")
@@ -319,6 +438,7 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
             prune_ssh_sessions=prune_ssh_sessions,
             start_ssh_session=start_ssh_session,
             write_ssh_session=write_ssh_session,
+            resize_ssh_session=resize_ssh_session,
             read_ssh_session_output=read_ssh_session_output,
             cleanup_ssh_session=cleanup_ssh_session,
             execute_ssh_command=execute_ssh_command,
@@ -351,6 +471,25 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
 
     def handle_payload_test(self, query=None, body=None):
         query = query or {}
+        # Purge stale temporary test port mappings across ALL links before
+        # allocating new ones; interrupted tests otherwise leak reservations
+        # and starve future tests of free ports.
+        purged_temp_count = {"count": 0}
+
+        def _purge_stale_temp_ports(data):
+            for existing_link in data.get("links", {}).values():
+                ports = existing_link.get("ports") or []
+                kept = [mapping for mapping in ports if not mapping.get("_temp_test")]
+                if len(kept) != len(ports):
+                    purged_temp_count["count"] += len(ports) - len(kept)
+                    existing_link["ports"] = kept
+
+        try:
+            db.update(_purge_stale_temp_ports)
+            if purged_temp_count["count"]:
+                db.log("panel", "info", f"Purged {purged_temp_count['count']} stale temporary payload-test port mapping(s).")
+        except Exception:
+            pass
         try:
             if body is None:
                 raw_body = self.get_post_body()
@@ -384,8 +523,11 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                 }, 400)
                 return
             mapping = ports[mapping_index]
-            user_port = int(mapping.get("user_port"))
-            target_port = int(mapping.get("target_port"))
+            try:
+                user_port = int(mapping.get("user_port"))
+                target_port = int(mapping.get("target_port"))
+            except (ValueError, TypeError):
+                user_port = target_port = 0
             if not valid_port(user_port) or not valid_port(target_port):
                 self.send_json({"error": "Invalid port mapping", "link_id": link_id, "mapping_index": mapping_index}, 400)
                 return
@@ -429,7 +571,7 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                 time.sleep(7)
                 cmd_id = queue_payload_echo_command(client_id, temp_target_port, duration=90)
                 echo_result = wait_for_node_command_result(client_id, cmd_id, timeout=22)
-                if not echo_result:
+                if not echo_result or echo_result.get("pending"):
                     self.send_json({
                         "error": "Tunnel client node did not start the temporary payload echo service. Update/restart that node and try again.",
                         "client_node": client_node.get("name", client_id),
@@ -450,7 +592,7 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
 
                 transfer_cmd_id = queue_payload_client_command(server_id, temp_user_port, size_mb=size_mb)
                 client_result = wait_for_node_command_result(server_id, transfer_cmd_id, timeout=75)
-                if not client_result:
+                if not client_result or client_result.get("pending"):
                     self.send_json({
                         "error": "Tunnel server node did not finish the payload transfer command. Check its listener/network mode and logs.",
                         "server_node": server_node.get("name", server_id),
@@ -660,7 +802,33 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     local_tunnel_role = "server" if matched_node_id == server_node_id else "client"
                     peer_node = client_node if local_tunnel_role == "server" else server_node
                     other_ip = peer_node.get("ip", "")
-                    
+
+                    def _persist_link_generated(fields, _lid=lid):
+                        """Persist builder-generated secrets/keys/uuids back into the link record."""
+                        try:
+                            target_link = db.data.get("links", {}).get(_lid)
+                            if not target_link:
+                                return
+                            changed = False
+                            for key, value in (fields or {}).items():
+                                if value and not target_link.get(key):
+                                    target_link[key] = value
+                                    changed = True
+                            if changed:
+                                db.save()
+                        except Exception:
+                            pass
+
+                    def _safe_build(builder, *builder_args, **builder_kwargs):
+                        """Isolate per-link config failures so one broken link cannot take down node sync."""
+                        if not builder:
+                            return None
+                        try:
+                            return builder(*builder_args, **builder_kwargs)
+                        except Exception as build_error:
+                            db.log("panel", "error", f"Failed building engine config for link '{lid}': {build_error}")
+                            return None
+
                     link_config = {
                         "id": lid,
                         "direction": direction,
@@ -698,11 +866,26 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                         "keepalive_interval": l.get("keepalive_interval", 25),
                         "hysteria_up_mbps": l.get("hysteria_up_mbps", HYSTERIA2_DEFAULT_UP_MBPS),
                         "hysteria_down_mbps": l.get("hysteria_down_mbps", HYSTERIA2_DEFAULT_DOWN_MBPS),
-                        "xray_config": xray_config_for_link(l, node.get("type", node.get("role", "unknown"))) if l.get("engine") == "xray" else None,
-                        "muxquantum_config": muxquantum_config_for_link(lid, l, node.get("type", node.get("role", "unknown")), other_ip) if l.get("engine") == "muxquantum" else None,
-                        "hysteria2_config": hysteria2_config_for_link(l, node.get("type", node.get("role", "unknown"))) if l.get("engine") == "hysteria2" else None,
-                        "amneziawg_config": amneziawg_config_for_link(lid, l, node.get("type", node.get("role", "unknown")), other_ip) if l.get("engine") == "amneziawg" and amneziawg_config_for_link else None,
-                        "wireguard_config": wireguard_config_for_link(lid, l, node.get("type", node.get("role", "unknown")), other_ip) if l.get("engine") == "wireguard" and wireguard_config_for_link else None
+                        "xray_config": _safe_build(
+                            xray_config_for_link, l, node.get("type", node.get("role", "unknown")),
+                            peer_ip=other_ip, persist=_persist_link_generated,
+                        ) if l.get("engine") == "xray" else None,
+                        "muxquantum_config": _safe_build(
+                            muxquantum_config_for_link, lid, l, node.get("type", node.get("role", "unknown")),
+                            other_ip, persist=_persist_link_generated,
+                        ) if l.get("engine") == "muxquantum" else None,
+                        "hysteria2_config": _safe_build(
+                            hysteria2_config_for_link, l, node.get("type", node.get("role", "unknown")),
+                            peer_ip=other_ip, persist=_persist_link_generated,
+                        ) if l.get("engine") == "hysteria2" else None,
+                        "amneziawg_config": _safe_build(
+                            amneziawg_config_for_link, lid, l, node.get("type", node.get("role", "unknown")),
+                            other_ip, persist=_persist_link_generated,
+                        ) if l.get("engine") == "amneziawg" and amneziawg_config_for_link else None,
+                        "wireguard_config": _safe_build(
+                            wireguard_config_for_link, lid, l, node.get("type", node.get("role", "unknown")),
+                            other_ip, persist=_persist_link_generated,
+                        ) if l.get("engine") == "wireguard" and wireguard_config_for_link else None
                     }
                     for key in (
                         "awg_address", "awg_client_address", "awg_mtu", "awg_jc", "awg_jmin", "awg_jmax",
@@ -787,6 +970,22 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                 self.send_json(payload, 200 if payload.get("success") else 400)
                 return
 
+            if path == "/api/mirrors/status":
+                payload = reprobe_mirrors(force_apply=False)
+                self.send_json(payload, 200 if payload.get("success") else 400)
+                return
+
+            if path == "/api/mirrors/probe":
+                payload = reprobe_mirrors(force_apply=False)
+                self.send_json(payload, 200 if payload.get("success") else 400)
+                return
+
+            if path == "/api/protocols/advise":
+                scenario = query.get("scenario", [""])[0] or None
+                payload = advise_protocols(scenario=scenario)
+                self.send_json(payload, 200 if payload.get("success") else 400)
+                return
+
             if path == "/api/nodes/version-check":
                 node_id = query.get("id", [""])[0]
                 if node_id and node_id not in db.data.get("nodes", {}):
@@ -851,6 +1050,7 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     ensure_tunnel_profiles=ensure_tunnel_profiles,
                     refresh_node_ping_async=refresh_node_ping_async,
                     save_db=db.save,
+                    update_db=db.update,
                 )
                 if handled:
                     if isinstance(payload, (bytes, bytearray)):
@@ -871,13 +1071,14 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     return
 
             if path == "/api/links/smart-test":
+                # GET support: parse query params matching the POST body schema
+                # (internal_node_id, external_node_id, direction, objective).
                 try:
-                    body = json.loads(self.get_post_body())
                     self.send_json(build_smart_tunnel_benchmark(
-                        body.get("internal_node_id"),
-                        body.get("external_node_id"),
-                        body.get("direction", "external_to_internal"),
-                        body.get("objective", "balanced"),
+                        query.get("internal_node_id", [None])[0],
+                        query.get("external_node_id", [None])[0],
+                        query.get("direction", ["external_to_internal"])[0] or "external_to_internal",
+                        query.get("objective", ["balanced"])[0] or "balanced",
                     ))
                 except Exception as e:
                     self.send_json({"error": f"Smart test failed: {e}"}, 400)
@@ -903,6 +1104,22 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     self.send_json(payload, 200 if payload.get("success") else 400)
                 except Exception as e:
                     self.send_json({"success": False, "error": f"Engine update check failed: {e}"}, 400)
+                return
+
+            if path == "/api/engines/update-all/status":
+                job = _get_engine_update_all_job(query.get("id", [""])[0])
+                if not job:
+                    self.send_json({"error": "Engine update-all job not found"}, 404)
+                else:
+                    self.send_json({"success": True, "job": job})
+                return
+
+            if path == "/api/mirrors/apply":
+                try:
+                    payload = reprobe_mirrors(force_apply=True)
+                    self.send_json(payload, 200 if payload.get("success") else 400)
+                except Exception as e:
+                    self.send_json({"success": False, "error": f"Mirror apply failed: {e}"}, 400)
                 return
 
             if path == "/api/engines/control":
@@ -952,25 +1169,33 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     return
 
             if path in ("/api/links/toggle-pause", "/api/links/test", "/api/links/engine-config") and dispatch_links_get:
-                handled, payload, status = dispatch_links_get(
-                    path,
-                    query,
-                    db_data=db.data,
-                    save_db=db.save,
-                    log_event=db.log,
-                    list_runtime_sessions=list_runtime_sessions,
-                    hysteria2_config_for_link=hysteria2_config_for_link,
-                    muxquantum_config_for_link=muxquantum_config_for_link,
-            xray_config_for_link=xray_config_for_link,
-            singbox_config_for_link=singbox_config_for_link,
-            masque_config_for_link=masque_config_for_link,
-                    amneziawg_config_for_link=amneziawg_config_for_link,
-                    wireguard_config_for_link=wireguard_config_for_link,
-                    ssh_config_for_link=ssh_config_for_link,
-                    stunnel_config_for_link=stunnel_config_for_link,
-                    raw_socket_config_for_link=raw_socket_config_for_link,
-                    aead_config_for_link=aead_config_for_link,
-                )
+                try:
+                    handled, payload, status = dispatch_links_get(
+                        path,
+                        query,
+                        db_data=db.data,
+                        save_db=db.save,
+                        log_event=db.log,
+                        list_runtime_sessions=list_runtime_sessions,
+                        hysteria2_config_for_link=hysteria2_config_for_link,
+                        muxquantum_config_for_link=muxquantum_config_for_link,
+                        xray_config_for_link=xray_config_for_link,
+                        singbox_config_for_link=singbox_config_for_link,
+                        masque_config_for_link=masque_config_for_link,
+                        amneziawg_config_for_link=amneziawg_config_for_link,
+                        wireguard_config_for_link=wireguard_config_for_link,
+                        ssh_config_for_link=ssh_config_for_link,
+                        stunnel_config_for_link=stunnel_config_for_link,
+                        raw_socket_config_for_link=raw_socket_config_for_link,
+                        aead_config_for_link=aead_config_for_link,
+                        phormal_config_for_link=phormal_config_for_link,
+                        hedioum_config_for_link=hedioum_config_for_link,
+                    )
+                except Exception as e:
+                    # Config builders fail loudly for broken links (e.g. missing
+                    # REALITY keys); surface that as JSON instead of a dropped
+                    # connection.
+                    handled, payload, status = True, {"error": f"Failed building engine config: {e}"}, 400
                 if handled:
                     self.send_json(payload, status)
                     return
@@ -1015,9 +1240,14 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                 username = body.get("username")
                 password = body.get("password")
                 otp = body.get("otp")
-                pwd_hash = hashlib.sha256(password.encode()).hexdigest()
 
-                if username == db.data["admin"]["username"] and pwd_hash == db.data["admin"]["password_hash"]:
+                admin = db.data.get("admin", {})
+                stored_hash = str(admin.get("password_hash") or "")
+                if username == admin.get("username") and verify_password(password or "", stored_hash):
+                    # Upgrade legacy unsalted sha256 hash to PBKDF2 on successful login.
+                    if password_needs_upgrade(stored_hash):
+                        db.data["admin"]["password_hash"] = hash_password(password or "")
+                        db.save()
                     if db.data["settings"].get("two_factor_enabled"):
                         if not verify_totp(db.data["settings"].get("two_factor_secret", ""), otp):
                             self.send_json({"error": "Invalid two-factor code"}, 401)
@@ -1312,7 +1542,27 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     detail = (e.stderr or e.stdout or b"").decode(errors="replace") if isinstance(e.stderr or e.stdout, bytes) else str(e.stderr or e.stdout or e)
                     self.send_json({"error": f"Migration failed: {detail[-3000:]}"}, 400)
                 except Exception as e:
-                    self.send_json({"error": f"Migration failed: {e}"}, 400)
+                    self.send_json({"error": f"Remote update queue failed: {e}"}, 400)
+                return
+
+            if path == "/api/engines/update-all":
+                # Sequentially update every engine with an available update in a
+                # background thread; the panel polls /api/engines/update-all/status.
+                try:
+                    existing_running = False
+                    with _ENGINE_UPDATE_ALL_JOBS_LOCK:
+                        existing_running = any(
+                            job.get("state") == "running"
+                            for job in _ENGINE_UPDATE_ALL_JOBS.values()
+                        )
+                    if existing_running:
+                        self.send_json({"error": "An engine update-all job is already running"}, 409)
+                        return
+                    job = _start_engine_update_all_job()
+                    db.log("panel", "info", f"Started engine update-all job {job['id']}.")
+                    self.send_json({"success": True, "job": job}, 202)
+                except Exception as e:
+                    self.send_json({"error": f"Engine update-all could not start: {e}"}, 400)
                 return
 
             if path == "/api/engines/health":
@@ -1331,6 +1581,14 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     self.send_json(payload, 200 if payload.get("success") else 400)
                 except Exception as e:
                     self.send_json({"success": False, "error": f"Engine update check failed: {e}"}, 400)
+                return
+
+            if path == "/api/mirrors/apply":
+                try:
+                    payload = reprobe_mirrors(force_apply=True)
+                    self.send_json(payload, 200 if payload.get("success") else 400)
+                except Exception as e:
+                    self.send_json({"success": False, "error": f"Mirror apply failed: {e}"}, 400)
                 return
 
             if path == "/api/engines/control":
@@ -1448,7 +1706,8 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     xui_url = body.get("url", "").rstrip("/")
                     xui_user = body.get("username")
                     xui_pass = body.get("password")
-                    
+                    insecure = bool(body.get("insecure", False))
+
                     if not link_id or link_id not in db.data["links"]:
                         self.send_json({"error": "Link not found"}, 404)
                         return
@@ -1457,17 +1716,73 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                         return
 
                     import urllib.request, urllib.parse, urllib.error
-                    
+                    import ipaddress
+                    import socket
+
+                    # Validate URL scheme/host to prevent SSRF (admin-reachable, but still
+                    # block internal-metadata endpoints unless explicitly insecure).
+                    # NOTE: do not re-import urlparse here (it would shadow the module-level
+                    # binding and turn it into an UnboundLocalError for the whole do_POST).
+                    parsed = urlparse(xui_url)
+                    if parsed.scheme not in ("http", "https"):
+                        self.send_json({"error": "X-UI URL must use http or https"}, 400)
+                        return
+                    if not parsed.hostname:
+                        self.send_json({"error": "X-UI URL has no hostname"}, 400)
+                        return
+                    # Resolve the hostname and reject the request when ANY resolved
+                    # address is private/loopback/link-local/reserved/multicast.
+                    # Hostnames that merely look public but resolve internally (DNS
+                    # names for 169.254.169.254, localhost aliases, etc.) are caught.
+                    hostname = parsed.hostname
+                    try:
+                        addr_infos = socket.getaddrinfo(hostname, None)
+                    except OSError as resolve_error:
+                        self.send_json({"error": f"Cannot resolve X-UI host '{hostname}': {resolve_error}"}, 400)
+                        return
+                    blocked_addresses = []
+                    for addr_info in addr_infos:
+                        try:
+                            resolved_ip = ipaddress.ip_address(addr_info[4][0])
+                        except ValueError:
+                            continue
+                        if (
+                            resolved_ip.is_private
+                            or resolved_ip.is_loopback
+                            or resolved_ip.is_link_local
+                            or resolved_ip.is_reserved
+                            or resolved_ip.is_multicast
+                        ):
+                            blocked_addresses.append(str(resolved_ip))
+                    if blocked_addresses and not insecure:
+                        self.send_json({
+                            "error": f"Internal/loopback/link-local hosts blocked (resolved: {', '.join(blocked_addresses[:4])}). Pass insecure=true if this is intended."
+                        }, 400)
+                        return
+
+                    # TLS context: verify by default; only disable when the admin explicitly opts in
+                    # for a self-signed internal X-UI panel.
+                    ctx = ssl.create_default_context()
+                    if insecure:
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+
+                    # Redirects are never followed: a redirect could bounce the
+                    # authenticated session at an internal endpoint.
+                    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+                        def redirect_request(self, req, fp, code, msg, headers, newurl):
+                            return None
+
+                    xui_opener = urllib.request.build_opener(
+                        _NoRedirect, urllib.request.HTTPSHandler(context=ctx)
+                    )
+
                     # 1. Login
                     login_data = urllib.parse.urlencode({"username": xui_user, "password": xui_pass}).encode('utf-8')
                     login_req = urllib.request.Request(f"{xui_url}/login", data=login_data)
-                    # Ignore SSL errors if using fake certs
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    
+
                     try:
-                        resp = urllib.request.urlopen(login_req, context=ctx, timeout=10)
+                        resp = xui_opener.open(login_req, timeout=10)
                         cookie = resp.headers.get('Set-Cookie')
                         if not cookie:
                             self.send_json({"error": "Login failed (No cookie returned)"}, 401)
@@ -1480,9 +1795,9 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     list_req = urllib.request.Request(f"{xui_url}/panel/api/inbounds/list")
                     list_req.add_header('Cookie', cookie)
                     list_req.add_header('Accept', 'application/json')
-                    
+
                     try:
-                        resp = urllib.request.urlopen(list_req, context=ctx, timeout=10)
+                        resp = xui_opener.open(list_req, timeout=10)
                         data = json.loads(resp.read().decode('utf-8'))
                         if not data.get("success"):
                             self.send_json({"error": "Failed to fetch inbounds from X-UI API"}, 400)
@@ -1638,7 +1953,7 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                         return
 
                     db.data["admin"]["username"] = username
-                    db.data["admin"]["password_hash"] = hashlib.sha256(password.encode()).hexdigest()
+                    db.data["admin"]["password_hash"] = hash_password(password)
                     db.save()
                     active_sessions.clear()
                     db.log("panel", "info", f"Admin credentials updated. Username changed to '{username}'. Sessions cleared.")
@@ -1653,6 +1968,15 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     panel_tls = True
                     cert_path = body.get("cert_path", f"{CONFIG_DIR}/certs/cert.pem")
                     key_path = body.get("key_path", f"{CONFIG_DIR}/certs/key.pem")
+                    # Confine cert/key paths to the panel certs directory to prevent arbitrary file reads
+                    # (path traversal via ../../etc/passwd etc.).
+                    allowed_dir = os.path.realpath(f"{CONFIG_DIR}/certs")
+                    for candidate in (cert_path, key_path):
+                        if candidate:
+                            real = os.path.realpath(candidate)
+                            if not real.startswith(allowed_dir + os.sep) and real != allowed_dir:
+                                self.send_json({"error": "Certificate/key paths must be inside the panel certs directory"}, 400)
+                                return
                     if not cert_path or not key_path or not os.path.isfile(cert_path) or not os.path.isfile(key_path):
                         host = body.get("host") or db.data["settings"].get("panel_host") or "localhost"
                         cert_path, key_path = generate_local_panel_certificate(host, cert_path, key_path)
@@ -1955,7 +2279,12 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     node = db.data["nodes"].pop(node_id)
                     for lid in list(db.data["links"].keys()):
                         l = db.data["links"][lid]
-                        if l["iran_node_id"] == node_id or l["foreign_node_id"] == node_id:
+                        # Match both canonical (internal_node_id/external_node_id) and legacy keys safely.
+                        linked_ids = (
+                            l.get("internal_node_id") or l.get("iran_node_id"),
+                            l.get("external_node_id") or l.get("foreign_node_id"),
+                        )
+                        if node_id in linked_ids:
                             db.data["links"].pop(lid)
                     db.save()
                     db.log("panel", "info", f"Deleted node '{node['name']}' and its associated tunnel links.")

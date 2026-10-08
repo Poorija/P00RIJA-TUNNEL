@@ -7,12 +7,20 @@ from collections.abc import Callable
 from typing import Any
 
 
-TARGET_NODE_VERSION = "1.9.95"
+TARGET_NODE_VERSION = "1.9.99"
 
 
 def _num(value: Any, default: float = 0.0) -> float:
     try:
         return float(value or 0)
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Coerce node-supplied numerics to int without crashing on bad payloads."""
+    try:
+        return int(float(value))
     except Exception:
         return default
 
@@ -66,13 +74,13 @@ def _build_runtime_intelligence(
         if not link.get("running"):
             score -= 45
             reasons.append("not_running")
-        if int(link.get("sessions") or 0) == 0:
+        if _safe_int(link.get("sessions")) == 0:
             score -= 8
             reasons.append("no_active_session")
-        if int(link.get("ready_workers") or 0) < max(1, int(link.get("desired_workers") or 1)):
+        if _safe_int(link.get("ready_workers")) < max(1, _safe_int(link.get("desired_workers"), 1)):
             score -= 12
             reasons.append("low_ready_workers")
-        if int(link.get("thread_pressure") or 0) >= 160:
+        if _safe_int(link.get("thread_pressure")) >= 160:
             score -= 18
             reasons.append("thread_pressure")
         if link.get("action") not in ("ok", ""):
@@ -254,10 +262,7 @@ def dispatch_runtime_get(
             online = node.get("status") == "online" and now - node.get("last_seen", 0) <= 30
             stats = node.get("stats") or {}
             if online:
-                try:
-                    node_threads += int(stats.get("threads") or 0)
-                except Exception:
-                    pass
+                node_threads += _safe_int(stats.get("threads"))
             node_resources.append({
                 "id": node_id,
                 "name": node.get("name", node_id),
@@ -265,12 +270,12 @@ def dispatch_runtime_get(
                 "status": "online" if online else "offline",
                 "app_version": _node_reported_version(node),
                 "app_build": str(stats.get("app_build") or ""),
-                "cpu": stats.get("cpu", 0),
-                "ram": stats.get("ram", 0),
-                "rx_speed": stats.get("rx_speed", 0),
-                "tx_speed": stats.get("tx_speed", 0),
-                "threads": stats.get("threads", 0),
-                "connections": stats.get("connections", 0),
+                "cpu": _num(stats.get("cpu")),
+                "ram": _num(stats.get("ram")),
+                "rx_speed": _num(stats.get("rx_speed")),
+                "tx_speed": _num(stats.get("tx_speed")),
+                "threads": _safe_int(stats.get("threads")),
+                "connections": _safe_int(stats.get("connections")),
                 "last_command_result": node.get("last_command_result"),
             })
         link_resources: list[dict[str, Any]] = []
@@ -298,9 +303,9 @@ def dispatch_runtime_get(
                 action = "paused"
             elif not running:
                 action = "start_or_check_nodes"
-            elif sessions_by_link.get(link_id, 0) == 0 and int(ready or 0) > int(desired or 0):
+            elif sessions_by_link.get(link_id, 0) == 0 and _safe_int(ready) > _safe_int(desired):
                 action = "reap_idle_reserve"
-            elif int(pressure or 0) >= 160:
+            elif _safe_int(pressure) >= 160:
                 action = "reduce_thread_pressure"
             elif link.get("engine", "builtin") != "builtin":
                 action = "engine_process_watch"

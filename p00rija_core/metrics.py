@@ -150,6 +150,11 @@ def get_ram_percent():
 
 def get_own_rss_kb():
     try:
+        import psutil
+        return int(psutil.Process(os.getpid()).memory_info().rss / 1024)
+    except Exception:
+        pass
+    try:
         with open(f"/proc/{os.getpid()}/status", "r") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
@@ -157,6 +162,9 @@ def get_own_rss_kb():
     except Exception:
         pass
     try:
+        # ru_maxrss is PEAK RSS (high-water mark), not current usage; it can
+        # overstate resident memory after temporary spikes. /proc and psutil
+        # above report current RSS and are preferred when available.
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         if sys.platform == "darwin":
             rss = rss / 1024

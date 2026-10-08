@@ -2,10 +2,10 @@
 
 ![P00RIJA TUNNEL logo](assets/p00rija-logo.svg)
 
-**Version:** 1.9.95  
+**Version:** 1.9.96  
 **License:** GPL v3  
 **Developer:** [Poorija](https://github.com/Poorija)  
-**Email:** p00rija@tutamail.com
+**Email:** mohammadmahdi.farhadianfard@gmail.com
 
 [فارسی](README_FA.md)
 
@@ -15,7 +15,7 @@ Fresh databases still start with `admin` / `admin` only as an emergency default.
 
 The panel is designed for real operational use: certificate management, node enrollment, SSH control, tunnel creation, speed testing, engine management, backup/restore, host migration, monitoring, data-plane tuning, and mobile-friendly administration are all available from the web UI.
 
-Transport and profile tooling covers classic reverse TCP, WebSocket/TLS, HTTP/2, HTTP/3/QUIC, REALITY, XHTTP, ShadowTLS, AnyTLS, MASQUE CONNECT-UDP, AmneziaWG/WireGuard-style paths, shared multiplexing, adaptive bonding, and hybrid mux/bonding modes. Availability depends on the installed engine binaries and the selected node capabilities.
+Transport and profile tooling covers classic reverse TCP, WebSocket/TLS, HTTP/2, HTTP/3/QUIC, REALITY, XHTTP, Xray HTTPUpgrade, Cloak HTTPS camouflage, ShadowTLS, AnyTLS, MASQUE CONNECT-UDP, AmneziaWG/WireGuard-style paths, shared multiplexing, adaptive bonding, and hybrid mux/bonding modes. Availability depends on the installed engine binaries and the selected node capabilities.
 
 ## Easy Install
 
@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main/install
 sudo bash install.sh
 ```
 
-This is the recommended command. If only `install.sh` is present, it downloads the complete `main` branch archive from `https://github.com/Poorija/P00RIJA-TUNNEL` into `/opt/p00rija-install` before continuing, so the graphical helper, Docker files, fonts, bundled engine binaries, and panel/node installers remain available. The raw URL and repository archive were verified on June 24, 2026.
+This is the recommended command. If only `install.sh` is present, it downloads the complete `main` branch archive from `https://github.com/Poorija/P00RIJA-TUNNEL` into `/opt/p00rija-install` before continuing, so the graphical helper, Docker files, fonts, bundled engine binaries, and panel/node installers remain available. The raw URL and repository archive were rechecked on July 6, 2026.
 
 Panel installer:
 
@@ -82,9 +82,9 @@ sudo bash install-node.sh
 
 - Internal, external, and panel-as-node management from one Servers tab.
 - Live node status, ping, traffic, CPU/RAM pressure, Docker/runtime status, resource snapshots, tags, role labels, and connection indicators.
-- Node SSH connection manager with saved encrypted credentials, command execution, and interactive control from the panel.
+- Node SSH connection manager with saved encrypted credentials, command execution, and an interactive PTY-backed terminal. Fish is the default login shell when available, with bash/zsh/sh/default-shell fallback and support for Tab, Backspace, arrows, Ctrl/Alt shortcuts, paste, and terminal resize.
 - Node update and compatibility checks for current, outdated, build-mismatched, ahead, and incompatible nodes.
-- Live node ordering and tag display with persistent ordering and touch-friendly controls.
+- Live node ordering and tag display with persistent ordering, compact per-node action dropdowns, and touch-friendly controls. Open action menus remain stable during automatic refresh cycles.
 
 ### Tunnel and port-forward management
 
@@ -97,11 +97,13 @@ sudo bash install-node.sh
 
 ### Transport profiles and engine coverage
 
-- Built-in reverse tunnel engine plus external engines and profiles for Reverse TCP, AmneziaWG v2, WireGuard-style paths, GOST, Backhaul, Rathole, Chisel, FRP, Xray, Hysteria2, sing-box, TUIC, NaiveProxy, ShadowTLS, Brook, Mieru, MASQUE, and Mux/Quantum-style profiles.
+- Built-in reverse tunnel engine plus external engines and profiles for Reverse TCP, AmneziaWG v2, WireGuard-style paths, GOST, Backhaul, Rathole, Chisel, FRP, Xray, Xray HTTPUpgrade + REALITY, Cloak HTTPS camouflage, Hysteria2, sing-box, TUIC, NaiveProxy, ShadowTLS, Brook, Mieru, MASQUE, Phormal, Hedioum Dynamic Pool, and Mux/Quantum-style profiles.
 - Profile catalog with speed, security, and stability scoring.
-- Support for modern profile families such as REALITY gRPC/HTTP2, XHTTP + REALITY, AnyTLS, ShadowTLS, HTTP/2 TLS, HTTP/3/QUIC, MASQUE CONNECT-UDP, MASQUE QUIC-aware proxy, TUIC UDP-over-stream, TURN-like TLS relay, and ECH-capable configurations where DNS/client/provider support exists.
+- Support for modern profile families such as REALITY gRPC/HTTP2, XHTTP + REALITY, Xray HTTPUpgrade + REALITY, Cloak HTTPS camouflage, AnyTLS, ShadowTLS, HTTP/2 TLS, HTTP/3/QUIC, MASQUE CONNECT-UDP, MASQUE QUIC-aware proxy, TUIC UDP-over-stream, TURN-like TLS relay, and ECH-capable configurations where DNS/client/provider support exists.
 - Engine Manager for binary discovery, health checks, executable permission repair, version checks, archive/manual install, process stop/restart, and engine update checks.
 - Bundled `engines/` directory plus `download_engines.py` for refreshing or rebuilding engine assets.
+- Phormal profile family for Bridge, Relay, Reverse, GRE, Echo, and Raw/udp2raw-style native host tunnels with explicit capability warnings for systemd, host networking, GRE/ICMP/raw socket requirements, and safe opt-in operation.
+- Hedioum profile family for SSH-mimic dynamic connection pools with SOCKS5 hub and foreign egress roles, conservative pool defaults, jittered per-connection caps, and no automatic OpenSSH port relocation.
 
 ### Smart testing and speed testing
 
@@ -139,6 +141,7 @@ sudo bash install-node.sh
 - Persian and English UI with Vazirmatn default font, multiple themes, PWA support, and browser-side translation auditing.
 - Responsive mobile/tablet layouts where node and port tables become readable cards, wide operational tables remain touch-scrollable, charts resize to their containers, and modal forms become safe-area-aware bottom sheets.
 - Direction-aware ordering controls for nodes, tunnel categories, and tunnels with distinct up/down icons and live persisted reordering.
+- Compact action dropdowns reduce node-table width pressure and preserve open-menu DOM state during timed dashboard refreshes.
 
 ## Engines And Offline Bundle
 
@@ -204,10 +207,10 @@ Before publishing or installing from source, run:
 ```bash
 python3 -m py_compile P00RIJA.py download_engines.py p00rija_core/*.py
 bash -n install.sh install-panel.sh install-node.sh Pooriya-tunnel.sh
-docker build --platform linux/amd64 -t p00rija-tunnel:1.9.95 .
+docker build --platform linux/amd64 -t p00rija-tunnel:1.9.96 .
 ```
 
-For a complete GitHub release, publish the generated `P00RIJA-TUNNEL-GitHub-v1.9.95-*.tar.gz` archive with bundled engine binaries. It excludes local caches, debug helpers, old release archives, and runtime state, while keeping `engines/` ready so users who download the repository/package receive a complete installable tree. Operators can still refresh engine binaries later with `python3 download_engines.py`.
+For a complete GitHub release, publish the generated `P00RIJA-TUNNEL-GitHubPackage-v1.9.96-*.tar.gz` or `.zip` archive with bundled engine binaries. It excludes local caches, debug helpers, old release archives, and runtime state, while keeping `engines/` ready so users who download the repository/package receive a complete installable tree. Operators can still refresh engine binaries later with `python3 download_engines.py`.
 
 ## License
 

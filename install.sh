@@ -10,7 +10,15 @@ if [[ -n "$SCRIPT_SOURCE" && "$SCRIPT_SOURCE" != "bash" && "$SCRIPT_SOURCE" != "
 else
   SCRIPT_DIR="$(pwd)"
 fi
-P00RIJA_REPO_TARBALL_URL="${P00RIJA_REPO_TARBALL_URL:-https://github.com/Poorija/P00RIJA-TUNNEL/archive/refs/heads/main.tar.gz}"
+# P00RIJA_SOURCE_REF pins the installer package to an exact source revision: a git tag
+# (for example v1.9.99), a full commit SHA, or a branch name. The default "main" tracks
+# the tip of development; operators who need reproducible installs can export a fixed
+# ref, e.g.: sudo P00RIJA_SOURCE_REF=v1.9.99 bash install.sh
+# It only affects the default archive URL below; an explicit P00RIJA_REPO_TARBALL_URL
+# always wins. install-panel.sh / install-node.sh honor the same variable for their
+# raw.githubusercontent.com fallback fetches.
+P00RIJA_SOURCE_REF="${P00RIJA_SOURCE_REF:-main}"
+P00RIJA_REPO_TARBALL_URL="${P00RIJA_REPO_TARBALL_URL:-https://github.com/Poorija/P00RIJA-TUNNEL/archive/${P00RIJA_SOURCE_REF}.tar.gz}"
 P00RIJA_INSTALL_WORKDIR="${P00RIJA_INSTALL_WORKDIR:-/opt/p00rija-install}"
 PANEL_INSTALLER="$SCRIPT_DIR/install-panel.sh"
 NODE_INSTALLER="$SCRIPT_DIR/install-node.sh"
