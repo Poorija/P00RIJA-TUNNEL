@@ -22,7 +22,6 @@ REQUIRED_PACKAGE_FILES = (
     "download_engines.py",
     "Dockerfile",
     "README.md",
-    "README_FA.md",
     "LICENSE",
 )
 

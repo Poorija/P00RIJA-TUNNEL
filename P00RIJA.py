@@ -159,7 +159,7 @@ APP_VERSION = "2.0.0"
 APP_BUILD = "release-2.0.0-20261008"
 APP_LICENSE = "AGPL-3.0"
 APP_AUTHOR_GITHUB = "https://github.com/Poorija"
-APP_AUTHOR_EMAIL = "mohammadmahdi.farhadianfard@gmail.com"
+APP_AUTHOR_EMAIL = "p00rija@tutamail.com"
 NODE_ENROLLMENT_API_KEY = os.environ.get("P00RIJA_NODE_API_KEY", "")
 PANEL_TLS_FORCED = True
 try:

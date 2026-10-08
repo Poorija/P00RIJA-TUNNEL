@@ -467,7 +467,7 @@ run_docker_container() {
     printf '%s\n' '"""Fallback empty module package."""' > "$CONFIG_DIR/p00rija_core/__init__.py"
   fi
   local package_file
-  for package_file in install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py download_engines.py README.md README_FA.md LICENSE .dockerignore; do
+  for package_file in install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py download_engines.py README.md LICENSE .dockerignore; do
     if [[ -f "./$package_file" ]]; then
       install -m 0644 "./$package_file" "$CONFIG_DIR/$package_file"
     fi
@@ -493,7 +493,7 @@ COPY P00RIJA.py /app/P00RIJA.py
 COPY download_engines.py /app/download_engines.py
 COPY p00rija_core/ /app/p00rija_core/
 COPY fonts/ /app/fonts/
-COPY install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py README.md README_FA.md LICENSE Dockerfile /app/
+COPY install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py README.md LICENSE Dockerfile /app/
 COPY engines/ /usr/local/bin/
 EXPOSE 8080
 # The panel's default web port constant is 8080; the container reads its actual

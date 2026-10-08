@@ -335,8 +335,6 @@ def bundle_archive(output):
             "p00rija-host-agent.py",
             "download_engines.py",
             "README.md",
-            "README_FA.md",
-            "README-FA.md",
             "LICENSE",
             "assets",
             "fonts",
