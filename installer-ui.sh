@@ -337,11 +337,18 @@ configure_package_mirrors() {
   local backup_dir="/etc/apt/p00rija-backup-$(date +%Y%m%d_%H%M%S)"
   mkdir -p "$backup_dir"
   # Only touch the two canonical source locations; scanning all of /etc/apt would
-  # also sweep up files inside earlier p00rija-backup-* directories.
-  find /etc/apt/sources.list /etc/apt/sources.list.d -maxdepth 1 \( -name '*.list' -o -name '*.sources' \) -type f -print0 2>/dev/null | while IFS= read -r -d '' src; do
-    cp -f "$src" "$backup_dir/$(basename "$src").bak" || true
-    mv -f "$src" "$backup_dir/$(basename "$src")" || true
-  done
+  # also sweep up files inside earlier p00rija-backup-* directories. Path
+  # operands must actually exist: `find <missing-path>` exits 1, which under
+  # `set -eo pipefail` would abort the whole installer.
+  local -a src_roots=()
+  [[ -f /etc/apt/sources.list ]] && src_roots+=("/etc/apt/sources.list")
+  [[ -d /etc/apt/sources.list.d ]] && src_roots+=("/etc/apt/sources.list.d")
+  if (( ${#src_roots[@]} )); then
+    find "${src_roots[@]}" -maxdepth 1 \( -name '*.list' -o -name '*.sources' \) -type f -print0 2>/dev/null | while IFS= read -r -d '' src; do
+      cp -f "$src" "$backup_dir/$(basename "$src").bak" || true
+      mv -f "$src" "$backup_dir/$(basename "$src")" || true
+    done || true
+  fi
   ui_info "APT sources backed up to ${backup_dir}"
   apt_update_with_retries "$distro" "$codename" "$backup_dir"
 }
