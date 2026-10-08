@@ -186,6 +186,12 @@ ui_password() {
   local title="$2"
   local text="$3"
   local input_value=""
+  # Headless/CI installs: P00RIJA_UI_PASSWORD provides the secret without a
+  # terminal (only ever read from the environment of the invoking root shell).
+  if [[ -n "${P00RIJA_UI_PASSWORD:-}" ]]; then
+    printf -v "$outvar" '%s' "$P00RIJA_UI_PASSWORD"
+    return 0
+  fi
   if have whiptail && [[ -t 0 && -t 1 ]]; then
     input_value=$(whiptail --title "$title" --passwordbox "$text" 10 78 3>&1 1>&2 2>&3) || exit 1
   else
