@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 
-TARGET_NODE_VERSION = "1.9.99"
+TARGET_NODE_VERSION = "2.0.0"
 
 
 def _num(value: Any, default: float = 0.0) -> float:

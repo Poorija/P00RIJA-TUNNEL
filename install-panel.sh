@@ -5,7 +5,7 @@ CONFIG_DIR="/opt/p00rija/panel"
 BIN="/usr/local/bin/Pooriya-tunnel"
 CONTROL_BIN="/usr/local/bin/p00rija"
 CONTAINER="p00rija-panel"
-VERSION="1.9.99"
+VERSION="2.0.0"
 IMAGE="p00rija-tunnel:${VERSION}"
 # P00RIJA_SOURCE_REF pins every GitHub fetch to an exact source revision: a tag
 # (v1.9.99), a commit SHA, or a branch name. Default "main" tracks the tip of

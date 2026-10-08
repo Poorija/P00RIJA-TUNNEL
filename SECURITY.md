@@ -2,20 +2,28 @@
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
-
 | Version | Supported          |
 | ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+| 2.0.x   | :white_check_mark: |
+| 1.9.x   | :x: (upgrade required) |
+| < 1.9   | :x:                |
 
 ## Reporting a Vulnerability
 
-Use this section to tell people how to report a vulnerability.
+If you discover a security vulnerability in P00RIJA TUNNEL, please report it
+responsibly:
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+- **Email:** p00rija@tutamail.com
+- Include reproduction steps, affected version (`Panel → About`), and, if
+  possible, a proof of concept.
+
+You can expect an acknowledgement within 7 days. Please do not disclose the
+issue publicly until a fix has been released.
+
+### Security-relevant scope
+
+- Panel/node authentication and enrolled-node request signing
+- Host control agent channel and certificate operations
+- Tunnel credential generation and storage
+- Backup encryption and restore pipeline
+- Installer and update delivery chain

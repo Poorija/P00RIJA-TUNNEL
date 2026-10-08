@@ -6,7 +6,7 @@
 set -euo pipefail
 
 APP_NAME="P00RIJA TUNNEL"
-VERSION="1.9.99"
+VERSION="2.0.0"
 TG_ID="@IlyaahD"
 GITHUB_REPO="github.com/Poorija/P00RIJA-TUNNEL"
 

@@ -16,7 +16,7 @@ MANAGER_PATH="/usr/local/bin/Pooriya-tunnel"
 INSTALL_WORKDIR="${P00RIJA_INSTALL_WORKDIR:-/opt/p00rija-install}"
 REPO_TARBALL_URL="${P00RIJA_REPO_TARBALL_URL:-https://github.com/Poorija/P00RIJA-TUNNEL/archive/refs/heads/main.tar.gz}"
 REPO_RAW_PY_URL="${P00RIJA_REPO_RAW_PY_URL:-https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main/P00RIJA.py}"
-IMAGE_TAGS=("p00rija-tunnel:1.9.99" "p00rija-tunnel:latest")
+IMAGE_TAGS=("p00rija-tunnel:2.0.0" "p00rija-tunnel:latest")
 
 need_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then

@@ -102,7 +102,7 @@ def current_image() -> str:
     try:
         return run(["docker", "inspect", "-f", "{{.Config.Image}}", PANEL_CONTAINER], timeout=20).stdout.strip()
     except Exception:
-        return "p00rija-tunnel:1.9.99"
+        return "p00rija-tunnel:2.0.0"
 
 
 def port_is_available(port: int, current_ports: set[int]) -> bool:
