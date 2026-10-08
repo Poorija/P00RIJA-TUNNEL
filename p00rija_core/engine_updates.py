@@ -569,3 +569,65 @@ def update_all_engines(
     }
     report({"phase": "completed", **summary})
     return summary
+
+
+# --- Panel self-update check (server -> GitHub) ---
+
+PANEL_REPO_LATEST_PATH = "/repos/Poorija/P00RIJA-TUNNEL/releases/latest"
+PANEL_REPO_TAGS_PATH = "/repos/Poorija/P00RIJA-TUNNEL/tags"
+PANEL_CHECK_CACHE_SECONDS = 15 * 60.0
+_PANEL_CHECK_CACHE: dict[str, Any] = {"at": 0.0, "result": {}}
+
+
+def _panel_latest_version() -> tuple[str, str]:
+    """Return (latest_version, release_url) from GitHub, tags as fallback."""
+    data, _ = _request_json(f"{GITHUB_API}{PANEL_REPO_LATEST_PATH}", timeout=10)
+    if isinstance(data, dict) and data.get("tag_name"):
+        return str(data["tag_name"]), str(data.get("html_url") or "")
+    # No releases published yet: fall back to the newest tag.
+    tags, _ = _request_json(f"{GITHUB_API}{PANEL_REPO_TAGS_PATH}", timeout=10)
+    if isinstance(tags, list) and tags:
+        first = tags[0]
+        return str(first.get("name") or ""), str(first.get("zipball_url") or "")
+    return "", ""
+
+
+def check_panel_update(current_version: str) -> dict[str, Any]:
+    """Compare APP_VERSION against the newest GitHub release of the panel.
+
+    Never raises on rate limits: returns a structured ``rate_limited`` payload
+    so the UI can show a friendly retry hint. Results are cached briefly.
+    """
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        if _PANEL_CHECK_CACHE["result"] and now - _PANEL_CHECK_CACHE["at"] < PANEL_CHECK_CACHE_SECONDS:
+            cached = dict(_PANEL_CHECK_CACHE["result"])
+            cached["cached"] = True
+            return cached
+    current = str(current_version or "").lstrip("vV")
+    try:
+        latest_raw, release_url = _panel_latest_version()
+    except _RateLimited as exc:
+        return {
+            "success": True,
+            "rate_limited": True,
+            "retry_after": int(max(0.0, min(exc.retry_after, RATE_LIMIT_RETRY_CAP))),
+            "rate_limit_remaining": getattr(exc, "remaining", ""),
+            "current": current,
+        }
+    except Exception as exc:  # network/DNS failures must not 500 the endpoint
+        return {"success": True, "current": current, "error": str(exc)}
+    latest = latest_raw.lstrip("vV")
+    result = {
+        "success": True,
+        "current": current,
+        "latest": latest,
+        "latest_tag": latest_raw,
+        "update_available": bool(latest) and _is_newer(latest, current),
+        "release_url": release_url,
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with _CACHE_LOCK:
+        _PANEL_CHECK_CACHE["at"] = now
+        _PANEL_CHECK_CACHE["result"] = dict(result)
+    return result

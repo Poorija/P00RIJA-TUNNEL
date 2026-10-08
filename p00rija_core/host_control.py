@@ -60,7 +60,7 @@ def submit_host_control(
     wait_timeout: float = 0,
     delay_seconds: float = 0,
 ) -> dict[str, Any]:
-    if action not in ("certificate", "panel_ports", "panel_node"):
+    if action not in ("certificate", "panel_ports", "panel_node", "panel_update"):
         raise ValueError("Unsupported host-control action")
     if not host_control_available(config_dir):
         raise RuntimeError("P00RIJA host agent is not installed or not running")

@@ -1114,6 +1114,15 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     self.send_json({"success": True, "job": job})
                 return
 
+            if path == "/api/system/panel-update-check":
+                try:
+                    from p00rija_core.engine_updates import check_panel_update
+
+                    self.send_json(check_panel_update(str(globals().get("APP_VERSION") or "")))
+                except Exception as e:
+                    self.send_json({"error": f"Panel update check failed: {e}"}, 500)
+                return
+
             if path == "/api/mirrors/apply":
                 try:
                     payload = reprobe_mirrors(force_apply=True)
@@ -1565,6 +1574,22 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": f"Engine update-all could not start: {e}"}, 400)
                 return
 
+            if path == "/api/system/panel-update":
+                # Ask the root host agent to run `p00rija update`; the panel
+                # container itself has no write access to the host install.
+                try:
+                    if not submit_host_control:
+                        raise RuntimeError("Host-control module is unavailable")
+                    result = submit_host_control(CONFIG_DIR, "panel_update", {}, wait_timeout=5)
+                    self.send_json({
+                        "success": bool(result.get("success")),
+                        "pending": bool(result.get("pending")),
+                        "result": result,
+                    })
+                except Exception as e:
+                    self.send_json({"error": f"Panel update could not start: {e}"}, 500)
+                return
+
             if path == "/api/engines/health":
                 try:
                     body = json.loads(self.get_post_body())
@@ -1997,13 +2022,12 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
                 try:
                     body = json.loads(self.get_post_body())
                     enable_2fa = bool(body.get("two_factor_enabled", False))
-                    enable_bio = bool(body.get("biometric_enabled", False))
                     if enable_2fa and not db.data["settings"].get("two_factor_secret"):
                         db.data["settings"]["two_factor_secret"] = make_totp_secret()
                     db.data["settings"]["two_factor_enabled"] = enable_2fa
-                    db.data["settings"]["biometric_enabled"] = enable_bio
+                    db.data["settings"].pop("biometric_enabled", None)
                     db.save()
-                    db.log("panel", "info", f"Security options updated. 2FA={enable_2fa}, biometric={enable_bio}.")
+                    db.log("panel", "info", f"Security options updated. 2FA={enable_2fa}.")
                     self.send_json({
                         "success": True,
                         "two_factor_secret": db.data["settings"].get("two_factor_secret", "") if enable_2fa else ""

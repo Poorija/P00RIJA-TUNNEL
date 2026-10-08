@@ -25,7 +25,7 @@ RESULT_DIR = os.path.join(CONTROL_DIR, "results")
 HEARTBEAT = os.path.join(CONTROL_DIR, "agent-heartbeat.json")
 SECRET_PATH = os.path.join(CONTROL_DIR, "agent_secret")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-SUPPORTED_ACTIONS = frozenset({"certificate", "panel_ports", "panel_node"})
+SUPPORTED_ACTIONS = frozenset({"certificate", "panel_ports", "panel_node", "panel_update"})
 # Shared-secret value; loaded or created once in main() before the request loop starts.
 AGENT_SECRET = ""
 PANEL_CONTAINER = "p00rija-panel"
@@ -369,6 +369,27 @@ def start_panel_node(payload: dict) -> dict:
     }
 
 
+def run_panel_update(payload: dict) -> dict:
+    """Pull the newest release through the installed control CLI as root.
+
+    No payload-controlled value ever reaches the command line: the action
+    always updates to the repository default.
+    """
+    control_bin = "/usr/local/bin/p00rija"
+    if not os.path.isfile(control_bin):
+        return {"success": False, "error": f"{control_bin} not installed; update manually"}
+    try:
+        completed = subprocess.run([control_bin, "update"], capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "panel update timed out after 15 minutes"}
+    return {
+        "success": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "stdout_tail": (completed.stdout or "")[-4000:],
+        "stderr_tail": (completed.stderr or "")[-4000:],
+    }
+
+
 def handle(request: dict) -> dict:
     action = request.get("action")
     if action not in SUPPORTED_ACTIONS:
@@ -378,6 +399,8 @@ def handle(request: dict) -> dict:
         return issue_certificate(payload)
     if action == "panel_ports":
         return change_panel_ports(payload)
+    if action == "panel_update":
+        return run_panel_update(payload)
     return start_panel_node(payload)
 
 

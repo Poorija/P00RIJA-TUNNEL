@@ -87,7 +87,6 @@ class P00RIJADB:
                 "key_path": f"{config_dir}/certs/key.pem",
                 "two_factor_enabled": False,
                 "two_factor_secret": "",
-                "biometric_enabled": False,
                 "node_api_key": node_api_key,
                 "tunnel_profiles": profiles_factory(),
             },
