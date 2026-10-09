@@ -24,19 +24,69 @@ def build_manifest(start_url: str = "/") -> bytes:
     return json.dumps({
         "name": "P00RIJA TUNNEL Panel",
         "short_name": "P00RIJA",
+        "description": "پنل مدیریت تانل معکوس چندسرویس P00RIJA TUNNEL",
+        "id": start_url or "/",
         "start_url": start_url or "/",
         "scope": "/",
         "display": "standalone",
+        "display_override": ["standalone", "minimal-ui"],
+        "dir": "rtl",
+        "lang": "fa",
         "background_color": "#07100f",
         "theme_color": "#20c7b5",
-        "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}],
-    }).encode("utf-8")
+        "icons": [
+            {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ],
+    }, ensure_ascii=False).encode("utf-8")
 
 
-def service_worker_script() -> bytes:
+def service_worker_script(version: str = "") -> bytes:
+    safe_version = "".join(ch for ch in str(version or "1") if ch.isalnum() or ch in ".-_") or "1"
     return (
-        "self.addEventListener('install',e=>self.skipWaiting());\n"
-        "self.addEventListener('activate',e=>e.waitUntil((async()=>{if(self.caches){const keys=await caches.keys();await Promise.all(keys.map(k=>caches.delete(k)));}await self.registration.unregister();await self.clients.claim();})()));\n"
+        "const CACHE = 'p00rija-shell-v" + safe_version + "';\n"
+        "const PRECACHE = ['/icon.svg', '/icon-192.png', '/icon-512.png', '/icon-512-maskable.png', '/apple-touch-icon.png'];\n"
+        "self.addEventListener('install', event => {\n"
+        "  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(PRECACHE).catch(() => {})).then(() => self.skipWaiting()));\n"
+        "});\n"
+        "self.addEventListener('activate', event => {\n"
+        "  event.waitUntil((async () => {\n"
+        "    if (self.caches) {\n"
+        "      const keys = await caches.keys();\n"
+        "      await Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)));\n"
+        "    }\n"
+        "    await self.clients.claim();\n"
+        "  })());\n"
+        "});\n"
+        "self.addEventListener('fetch', event => {\n"
+        "  const req = event.request;\n"
+        "  if (req.method !== 'GET') return;\n"
+        "  const url = new URL(req.url);\n"
+        "  if (url.origin !== self.location.origin) return;\n"
+        "  if (url.pathname.startsWith('/api/')) return;\n"
+        "  const isShell = PRECACHE.includes(url.pathname) || url.pathname.startsWith('/fonts/');\n"
+        "  if (isShell) {\n"
+        "    event.respondWith(\n"
+        "      caches.match(req).then(hit => hit || fetch(req).then(res => {\n"
+        "        const copy = res.clone();\n"
+        "        caches.open(CACHE).then(cache => cache.put(req, copy)).catch(() => {});\n"
+        "        return res;\n"
+        "      }))\n"
+        "    );\n"
+        "    return;\n"
+        "  }\n"
+        "  if (req.mode === 'navigate') {\n"
+        "    event.respondWith(\n"
+        "      fetch(req).then(res => {\n"
+        "        const copy = res.clone();\n"
+        "        caches.open(CACHE).then(cache => cache.put(req, copy)).catch(() => {});\n"
+        "        return res;\n"
+        "      }).catch(() => caches.match(req).then(hit => hit || Response.error()))\n"
+        "    );\n"
+        "  }\n"
+        "});\n"
     ).encode("utf-8")
 
 
@@ -102,10 +152,16 @@ INDEX_HTML = """<!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>پنل مدیریت P00RIJA TUNNEL</title>
     <meta name="theme-color" content="#20c7b5">
     <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="/icon.svg">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="P00RIJA">
     <style>
         @font-face { font-family: 'Vazirmatn'; src: url('/fonts/vazirmatn.woff2') format('woff2'); font-weight: normal; font-style: normal; font-display: swap; }
         @font-face { font-family: 'Shabnam'; src: url('/fonts/shabnam.woff2') format('woff2'); font-weight: normal; font-style: normal; font-display: swap; }
@@ -1355,7 +1411,7 @@ INDEX_HTML = """<!DOCTYPE html>
             .category-metrics { grid-template-columns: 1fr 1fr; }
             .node-resource-grid { grid-template-columns: 1fr; }
             .tunnel-guardian-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            #tab-settings .settings-grid { grid-template-columns: 1fr; }
+            .settings-grid { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 760px) {
@@ -1527,6 +1583,84 @@ INDEX_HTML = """<!DOCTYPE html>
             }
             #table-nodes .node-actions-line .btn { min-height: 40px; }
             .link-port-wrap { overflow: visible; }
+
+            /* Card-collapse pattern for data tables on phones */
+            #table-logs, #table-speedtest, #table-sessions, #table-threads, #table-processes {
+                min-width: 0;
+                display: block;
+                margin-top: 8px;
+            }
+            #table-logs thead, #table-speedtest thead, #table-sessions thead,
+            #table-threads thead, #table-processes thead { display: none; }
+            #table-logs tbody, #table-speedtest tbody, #table-sessions tbody,
+            #table-threads tbody, #table-processes tbody { display: grid; gap: 10px; }
+            #table-logs tr, #table-speedtest tr, #table-sessions tr,
+            #table-threads tr, #table-processes tr {
+                display: grid;
+                grid-template-columns: 1fr;
+                gap: 2px;
+                border: 1px solid var(--border-card);
+                border-radius: 12px;
+                padding: 10px;
+                background: rgba(255,255,255,.025);
+            }
+            #table-logs td, #table-speedtest td, #table-sessions td,
+            #table-threads td, #table-processes td {
+                display: grid;
+                grid-template-columns: minmax(88px, 32%) minmax(0, 1fr);
+                align-items: start;
+                gap: 4px 10px;
+                padding: 6px 0;
+                white-space: normal;
+                overflow-wrap: anywhere;
+            }
+            #table-logs td::before, #table-speedtest td::before, #table-sessions td::before,
+            #table-threads td::before, #table-processes td::before {
+                content: attr(data-label);
+                grid-column: 1;
+                color: var(--text-secondary);
+                font-size: 12px;
+                font-weight: 700;
+            }
+            #table-logs td[colspan], #table-speedtest td[colspan], #table-sessions td[colspan],
+            #table-threads td[colspan], #table-processes td[colspan] {
+                grid-column: 1 / -1;
+                display: block;
+                text-align: center;
+            }
+            #table-logs td > *, #table-speedtest td > *, #table-sessions td > *,
+            #table-threads td > *, #table-processes td > * { grid-column: 2; }
+            #table-logs td:first-child, #table-speedtest td:first-child, #table-sessions td:first-child,
+            #table-threads td:first-child, #table-processes td:first-child {
+                grid-column: 1 / -1;
+                display: block;
+                border-bottom: 1px solid var(--border-card);
+                padding-bottom: 8px;
+            }
+            #table-logs td:first-child::before, #table-speedtest td:first-child::before,
+            #table-sessions td:first-child::before, #table-threads td:first-child::before,
+            #table-processes td:first-child::before { display: none; }
+            #table-sessions td:last-child .btn, #table-processes td:last-child .btn { width: 100%; }
+            #table-logs td code, #table-sessions td code, #table-threads td code, #table-processes td code {
+                overflow-wrap: anywhere;
+                white-space: normal;
+            }
+            .speed-result-bar { max-width: 100%; }
+
+            /* Prevent iOS zoom-on-focus and enlarge touch targets */
+            input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+            select, textarea { font-size: 16px !important; }
+            .btn { min-height: 42px; }
+            pre, code, .terminal-output { max-width: 100%; overflow-x: auto; }
+
+            /* Safe areas when installed as a PWA */
+            @media (display-mode: standalone) {
+                body { padding-top: env(safe-area-inset-top); }
+                main {
+                    padding-top: max(12px, env(safe-area-inset-top));
+                    padding-bottom: max(18px, env(safe-area-inset-bottom));
+                }
+            }
             .link-port-table {
                 min-width: 0;
                 display: block;
@@ -1965,7 +2099,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 <div class="speed-progress mt-20"><span id="speedtest-progress-bar"></span></div>
                 <div id="speedtest-summary" class="speed-summary-grid mt-20"></div>
                 <div class="table-wrap mt-20">
-                    <table>
+                    <table id="table-speedtest">
                         <thead><tr><th>مسیر</th><th>پروتکل</th><th>آپلود</th><th>دانلود</th><th>Loss/Jitter</th><th>Retransmit</th><th>CPU</th><th>وضعیت</th></tr></thead>
                         <tbody id="speedtest-results-body"></tbody>
                     </table>
@@ -7541,10 +7675,10 @@ var qrcode = function() {
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td style="color: var(--text-secondary); font-size: 13px;">${esc(entry.timestamp)}</td>
-                    <td><strong>${esc(entry.source)}</strong></td>
-                    <td class="${lvlClass}">${esc(entry.level).toUpperCase()}</td>
-                    <td><code>${esc(entry.message)}</code></td>
+                    <td data-label="${tx('زمان', 'Time')}" style="color: var(--text-secondary); font-size: 13px;">${esc(entry.timestamp)}</td>
+                    <td data-label="${tx('منبع', 'Source')}"><strong>${esc(entry.source)}</strong></td>
+                    <td data-label="${tx('سطح', 'Level')}" class="${lvlClass}">${esc(entry.level).toUpperCase()}</td>
+                    <td data-label="${tx('پیام', 'Message')}"><code>${esc(entry.message)}</code></td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -8303,7 +8437,7 @@ var qrcode = function() {
                 const tr = document.createElement('tr');
                 const remote = (s.source || 'panel') !== 'panel';
                 const label = remote ? tx('ارسال دستور بستن', 'Send close command') : t('close');
-                tr.innerHTML = `<td><code>${esc(s.id)}</code><br><small>${esc(s.node_name || 'Panel')}</small></td><td>${esc(s.link_id)}</td><td>${esc(s.target_port)}</td><td>${esc(s.age_seconds)}s</td><td>${esc(s.idle_seconds)}s</td><td><button class="btn w-auto p-10 btn-smart" onclick="closeSession('${esc(s.id)}')">${label}</button></td>`;
+                tr.innerHTML = `<td data-label="${tx('شناسه', 'ID')}"><code>${esc(s.id)}</code><br><small>${esc(s.node_name || 'Panel')}</small></td><td data-label="${tx('تانل', 'Tunnel')}">${esc(s.link_id)}</td><td data-label="${tx('مقصد', 'Target')}">${esc(s.target_port)}</td><td data-label="${tx('عمر', 'Age')}">${esc(s.age_seconds)}s</td><td data-label="${tx('بیکاری', 'Idle')}">${esc(s.idle_seconds)}s</td><td data-label="${tx('عملیات', 'Action')}"><button class="btn w-auto p-10 btn-smart" onclick="closeSession('${esc(s.id)}')">${label}</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -8334,13 +8468,13 @@ var qrcode = function() {
                     ? tx('این ردیف خلاصه تردهای گزارش‌شده از پروسس نود است.', 'This row summarizes threads reported by a node process.')
                     : '';
                 tr.innerHTML = `
-                    <td>${isGroup ? `<span class="tag-pill">${tx('گروه ترد', 'Thread group')}</span><br><small>${threadLabel}</small>` : `<code>${threadLabel}</code>`}</td>
-                    <td><code>${esc(th.pid || '-')}</code></td>
-                    <td>${esc(th.process || th.name || '-')}<br><small>${esc(th.name || '')}</small></td>
-                    <td>${sourceLabel}</td>
-                    <td><span class="tag-pill">${esc(th.state || '-')}</span></td>
-                    <td>${(Number(th.rss_kb || 0) / 1024).toFixed(1)} MB</td>
-                    <td>${esc(th.cpu_seconds || 0)}s</td>
+                    <td data-label="${tx('ترد', 'Thread')}">${isGroup ? `<span class="tag-pill">${tx('گروه ترد', 'Thread group')}</span><br><small>${threadLabel}</small>` : `<code>${threadLabel}</code>`}</td>
+                    <td data-label="PID"><code>${esc(th.pid || '-')}</code></td>
+                    <td data-label="${tx('پروسس', 'Process')}">${esc(th.process || th.name || '-')}<br><small>${esc(th.name || '')}</small></td>
+                    <td data-label="${tx('منبع', 'Source')}">${sourceLabel}</td>
+                    <td data-label="${tx('وضعیت', 'Status')}"><span class="tag-pill">${esc(th.state || '-')}</span></td>
+                    <td data-label="RSS">${(Number(th.rss_kb || 0) / 1024).toFixed(1)} MB</td>
+                    <td data-label="CPU">${esc(th.cpu_seconds || 0)}s</td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -8354,7 +8488,7 @@ var qrcode = function() {
                 const tr = document.createElement('tr');
                 tr.title = p.cmd || '';
                 const isPanelProcess = (p.source || 'panel') === 'panel';
-                tr.innerHTML = `<td><code>${esc(p.pid)}</code><br><small>${esc(p.node_name || 'Panel')}</small></td><td>${esc(p.name)}</td><td>${(Number(p.rss_kb || 0) / 1024).toFixed(1)} MB</td><td>${esc(p.threads)}</td><td>${esc(p.cpu_seconds)}s</td><td>${isPanelProcess ? `<button class="btn w-auto p-10" style="background: var(--danger);" onclick="terminateProcess(${Number(p.pid)})">SIGTERM</button>` : `<span class="tag-pill">${tx('نود', 'Node')}</span>`}</td>`;
+                tr.innerHTML = `<td data-label="PID"><code>${esc(p.pid)}</code><br><small>${esc(p.node_name || 'Panel')}</small></td><td data-label="${tx('نام', 'Name')}">${esc(p.name)}</td><td data-label="RSS">${(Number(p.rss_kb || 0) / 1024).toFixed(1)} MB</td><td data-label="${tx('تردها', 'Threads')}">${esc(p.threads)}</td><td data-label="CPU">${esc(p.cpu_seconds)}s</td><td data-label="${tx('عملیات', 'Action')}">${isPanelProcess ? `<button class="btn w-auto p-10" style="background: var(--danger);" onclick="terminateProcess(${Number(p.pid)})">SIGTERM</button>` : `<span class="tag-pill">${tx('نود', 'Node')}</span>`}</td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -9468,14 +9602,14 @@ var qrcode = function() {
                     : `${item.source_name || item.source_node_id} → ${item.target_name || item.target_node_id}`;
                 const rate = Math.max(Number(item.upload_mbps || 0), Number(item.download_mbps || 0));
                 return `<tr>
-                    <td><strong>${esc(route)}</strong><div class="speed-result-bar mt-20"><span style="width:${Math.max(2, rate * 100 / maxRate)}%"></span></div></td>
-                    <td>${esc(String(item.protocol || '-').toUpperCase())} · P${esc(item.parallel || '-')}</td>
-                    <td>${esc(item.upload_mbps ?? 0)} Mbps</td>
-                    <td>${esc(item.download_mbps ?? 0)} Mbps</td>
-                    <td>${esc(item.loss_percent ?? 0)}% / ${esc(item.jitter_ms ?? 0)} ms</td>
-                    <td>${esc(item.retransmits ?? 0)}</td>
-                    <td>${esc(item.cpu_local ?? 0)}% / ${esc(item.cpu_remote ?? 0)}%</td>
-                    <td class="${item.success ? 'text-success' : 'text-danger'}">${item.success ? tx('موفق', 'Success') : esc(item.error || tx('ناموفق', 'Failed'))}</td>
+                    <td data-label="${tx('مسیر', 'Route')}"><strong>${esc(route)}</strong><div class="speed-result-bar mt-20"><span style="width:${Math.max(2, rate * 100 / maxRate)}%"></span></div></td>
+                    <td data-label="${tx('پروتکل', 'Protocol')}">${esc(String(item.protocol || '-').toUpperCase())} · P${esc(item.parallel || '-')}</td>
+                    <td data-label="${tx('آپلود', 'Upload')}">${esc(item.upload_mbps ?? 0)} Mbps</td>
+                    <td data-label="${tx('دانلود', 'Download')}">${esc(item.download_mbps ?? 0)} Mbps</td>
+                    <td data-label="Loss/Jitter">${esc(item.loss_percent ?? 0)}% / ${esc(item.jitter_ms ?? 0)} ms</td>
+                    <td data-label="Retransmit">${esc(item.retransmits ?? 0)}</td>
+                    <td data-label="CPU">${esc(item.cpu_local ?? 0)}% / ${esc(item.cpu_remote ?? 0)}%</td>
+                    <td data-label="${tx('وضعیت', 'Status')}" class="${item.success ? 'text-success' : 'text-danger'}">${item.success ? tx('موفق', 'Success') : esc(item.error || tx('ناموفق', 'Failed'))}</td>
                 </tr>`;
             }).join('');
             const details = document.getElementById('speedtest-details');
@@ -10712,21 +10846,26 @@ var qrcode = function() {
             document.getElementById(id).style.display = 'none';
         }
 
-        async function cleanupLegacyBrowserCache() {
+        async function setupServiceWorker() {
             try {
-                if ('serviceWorker' in navigator) {
-                    const regs = await navigator.serviceWorker.getRegistrations();
-                    await Promise.all(regs.map(reg => reg.unregister()));
-                }
+                if (!('serviceWorker' in navigator)) return;
+                const secureContext = location.protocol === 'https:'
+                    || ['localhost', '127.0.0.1'].includes(location.hostname);
+                if (!secureContext) return;
                 if ('caches' in window) {
                     const keys = await caches.keys();
                     await Promise.all(keys.filter(key => key.startsWith('p00rija-')).map(key => caches.delete(key)));
                 }
+                const regs = await navigator.serviceWorker.getRegistrations();
+                await Promise.all(regs
+                    .filter(reg => reg.scriptURL.endsWith('/sw.js') === false)
+                    .map(reg => reg.unregister()));
+                await navigator.serviceWorker.register('/sw.js', { scope: '/' });
             } catch (err) {
-                console.warn('Legacy browser cache cleanup skipped:', err);
+                console.warn('Service worker registration skipped:', err);
             }
         }
-        cleanupLegacyBrowserCache();
+        setupServiceWorker();
 
         fetchSettings();
         applyTheme();

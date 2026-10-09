@@ -719,7 +719,46 @@ class P00RIJAHTTPHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/javascript")
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
             self.end_headers()
-            self.wfile.write(service_worker_script())
+            self.wfile.write(service_worker_script(APP_VERSION))
+            return
+
+        static_icon_routes = {
+            "/icon-192.png": "image/png",
+            "/icon-512.png": "image/png",
+            "/icon-512-maskable.png": "image/png",
+            "/apple-touch-icon.png": "image/png",
+        }
+        if path in static_icon_routes:
+            icon_name = os.path.basename(path)
+            static_dirs = [
+                os.environ.get("P00RIJA_STATIC_DIR", ""),
+                "/app/static",
+                os.path.join(CONFIG_DIR, "static"),
+                os.path.join(os.getcwd(), "static"),
+                os.path.join(APP_ROOT, "static"),
+            ]
+            icon_path = ""
+            for static_dir in static_dirs:
+                if not static_dir:
+                    continue
+                candidate = os.path.join(static_dir, icon_name)
+                if os.path.exists(candidate):
+                    icon_path = candidate
+                    break
+            if icon_path:
+                try:
+                    with open(icon_path, "rb") as f:
+                        content = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", static_icon_routes[path])
+                    self.send_header("Cache-Control", "public, max-age=604800")
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
+                except Exception:
+                    pass
+            self.send_response(404)
+            self.end_headers()
             return
 
         if path == "/icon.svg":

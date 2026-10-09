@@ -17,6 +17,7 @@ COPY P00RIJA.py /app/P00RIJA.py
 COPY download_engines.py /app/download_engines.py
 COPY p00rija_core/ /app/p00rija_core/
 COPY fonts /app/fonts
+COPY static /app/static
 COPY install.sh install-panel.sh install-node.sh installer-ui.sh Pooriya-tunnel.sh p00rija-control.sh restore-panel-backup.sh p00rija-host-agent.py README.md LICENSE Dockerfile /app/
 COPY engines/ /usr/local/bin/
 # The panel's default web port constant is 8080; the container reads its actual
