@@ -3189,7 +3189,7 @@ INDEX_HTML = """<!DOCTYPE html>
         </div>
     </div>
     <!-- QR code generator (MIT) (c) Kazuhiko Arase - embedded for offline use -->
-    <script>
+    """ r"""<script>
 //---------------------------------------------------------------------
 //
 // QR Code Generator for JavaScript
@@ -5487,8 +5487,7 @@ var qrcode = function() {
 }(function () {
     return qrcode;
 }));
-
-    </script>
+</script>""" """
 
     <script>
         let token = localStorage.getItem('token');
@@ -10335,6 +10334,13 @@ var qrcode = function() {
                     return;
                 }
                 if (data.error) throw new Error(data.error);
+                if (data.no_release) {
+                    if (statusEl) statusEl.innerText = tx(
+                        `نسخه نصب‌شده ${data.current || '?'} — هنوز هیچ تگ/ریلیزی در گیت‌هاب منتشر نشده است.`,
+                        `Installed ${data.current || '?'} — no release/tag published on GitHub yet.`
+                    );
+                    return;
+                }
                 if (statusEl) statusEl.innerText = `current: ${data.current || '?'} | latest: ${data.latest || '?'}`;
                 if (runBtn) runBtn.classList.toggle('hidden', !data.update_available);
                 if (badge && badgeText) {

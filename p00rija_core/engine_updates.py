@@ -575,21 +575,60 @@ def update_all_engines(
 
 PANEL_REPO_LATEST_PATH = "/repos/Poorija/P00RIJA-TUNNEL/releases/latest"
 PANEL_REPO_TAGS_PATH = "/repos/Poorija/P00RIJA-TUNNEL/tags"
+PANEL_MAIN_VERSION_URL = "https://raw.githubusercontent.com/Poorija/P00RIJA-TUNNEL/main/P00RIJA.py"
+PANEL_COMMITS_URL = "https://github.com/Poorija/P00RIJA-TUNNEL/commits/main"
 PANEL_CHECK_CACHE_SECONDS = 15 * 60.0
 _PANEL_CHECK_CACHE: dict[str, Any] = {"at": 0.0, "result": {}}
 
 
+def _panel_main_branch_version() -> tuple[str, str]:
+    """Last-resort fallback: read APP_VERSION from the raw main-branch entrypoint.
+
+    Keeps the update check useful for deployments whose repository has not
+    published any release or tag yet. Returns ("", "") when unavailable.
+    """
+    request = urllib.request.Request(PANEL_MAIN_VERSION_URL, headers=_github_headers(""))
+    with _OPENER_LOCK:
+        wait = REQUEST_SPACING_SECONDS - (time.monotonic() - _LAST_REQUEST_AT["monotonic"])
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_REQUEST_AT["monotonic"] = time.monotonic()
+        try:
+            with _SHARED_OPENER.open(request, timeout=10) as response:
+                text = response.read().decode("utf-8", "ignore")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return "", ""
+            raise
+    match = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if not match:
+        return "", ""
+    return match.group(1), PANEL_COMMITS_URL
+
+
 def _panel_latest_version() -> tuple[str, str]:
     """Return (latest_version, release_url) from GitHub, tags as fallback."""
-    data, _ = _request_json(f"{GITHUB_API}{PANEL_REPO_LATEST_PATH}", timeout=10)
+    try:
+        data, _ = _request_json(f"{GITHUB_API}{PANEL_REPO_LATEST_PATH}", timeout=10)
+    except urllib.error.HTTPError as exc:
+        # A private/absent release set answers 404 here; fall back to tags.
+        if exc.code != 404:
+            raise
+        data = None
     if isinstance(data, dict) and data.get("tag_name"):
         return str(data["tag_name"]), str(data.get("html_url") or "")
     # No releases published yet: fall back to the newest tag.
-    tags, _ = _request_json(f"{GITHUB_API}{PANEL_REPO_TAGS_PATH}", timeout=10)
+    try:
+        tags, _ = _request_json(f"{GITHUB_API}{PANEL_REPO_TAGS_PATH}", timeout=10)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        tags = None
     if isinstance(tags, list) and tags:
         first = tags[0]
         return str(first.get("name") or ""), str(first.get("zipball_url") or "")
-    return "", ""
+    # Neither releases nor tags: derive the version from the main branch.
+    return _panel_main_branch_version()
 
 
 def check_panel_update(current_version: str) -> dict[str, Any]:
@@ -625,6 +664,7 @@ def check_panel_update(current_version: str) -> dict[str, Any]:
         "latest_tag": latest_raw,
         "update_available": bool(latest) and _is_newer(latest, current),
         "release_url": release_url,
+        "no_release": not bool(latest),
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     with _CACHE_LOCK:
